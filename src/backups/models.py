@@ -37,6 +37,11 @@ class BackupTarget(models.Model):
         blank=True,
         help_text="Human-readable description of what this backup covers",
     )
+    icon = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Emoji or icon identifier for this target (e.g., '🏠' or '📊')",
+    )
 
     # FastDeploy service configuration
     fastdeploy_service = models.CharField(

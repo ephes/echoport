@@ -33,6 +33,8 @@ X_FRAME_OPTIONS = "DENY"
 # CSRF settings
 CSRF_COOKIE_SECURE = True
 SESSION_COOKIE_SECURE = True
+# Trust origins based on ALLOWED_HOSTS (for reverse proxy)
+CSRF_TRUSTED_ORIGINS = [f"https://{host}" for host in ALLOWED_HOSTS if host and host != "127.0.0.1"]
 
 # Database - use PostgreSQL in production if configured
 if os.environ.get("DATABASE_URL"):

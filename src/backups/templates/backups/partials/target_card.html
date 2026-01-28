@@ -8,6 +8,7 @@
 
     <div class="card-header">
         <h3>
+            {% if target.icon %}<span class="target-icon">{{ target.icon }}</span>{% endif %}
             <a href="{% url 'backups:target_detail' target.id %}">{{ target.name }}</a>
         </h3>
         <span class="status-badge status-{{ target.status }}">{{ target.get_status_display }}</span>

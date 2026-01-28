@@ -57,3 +57,7 @@ reset-db:
     rm -f src/django/db.sqlite3
     just migrate
     just devdata
+
+# Deploy to macmini via ops-control
+deploy:
+    cd ~/projects/ops-control && just deploy-one echoport

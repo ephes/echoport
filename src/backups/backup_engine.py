@@ -9,7 +9,7 @@ errors when mixing async code with ORM operations.
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 
 from django.conf import settings
 from django.db import IntegrityError, close_old_connections
@@ -175,7 +175,7 @@ def start_backup(
 
 def _build_backup_context(target: BackupTarget, run: BackupRun) -> dict:
     """Build the context dictionary to pass to FastDeploy."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    timestamp = datetime.now(dt_timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
 
     return {
         "ECHOPORT_TARGET": target.name,

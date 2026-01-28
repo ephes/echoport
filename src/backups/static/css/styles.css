@@ -123,6 +123,11 @@ footer {
     text-decoration: none;
 }
 
+.target-icon {
+    font-size: 1.25rem;
+    margin-right: 0.5rem;
+}
+
 .card-header h3 a:hover {
     color: var(--color-primary);
 }
