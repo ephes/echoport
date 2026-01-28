@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Echoport{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h2>Backup Targets</h2>
+
+    {% if targets %}
+    <div class="target-grid">
+        {% for target in targets %}
+        {% include "backups/partials/target_card.html" with target=target %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No backup targets configured.</p>
+        <p>Run <code>python manage.py create_devdata</code> to create sample targets.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

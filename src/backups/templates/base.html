@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+{% load django_htmx %}
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Echoport{% endblock %}</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'css/styles.css' %}">
+    {% htmx_script %}
+    {% block extra_css %}{% endblock %}
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+    <header>
+        <div class="container header-container">
+            <h1><a href="{% url 'backups:dashboard' %}" class="header-link">Echoport</a></h1>
+            <span class="tagline">Backup Orchestration</span>
+        </div>
+    </header>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="container">
+        <p>Echoport Backup System</p>
+    </footer>
+
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% load humanize %}
+
+{% block title %}Run #{{ run.id }} - Echoport{% endblock %}
+
+{% block content %}
+<div class="run-detail">
+    <nav class="breadcrumb">
+        <a href="{% url 'backups:dashboard' %}">Dashboard</a> &raquo;
+        <a href="{% url 'backups:target_detail' target.id %}">{{ target.name }}</a> &raquo;
+        <span>Run #{{ run.id }}</span>
+    </nav>
+
+    <div class="run-header">
+        <h2>Backup Run #{{ run.id }}</h2>
+        <span class="status-badge status-{{ run.status }}">{{ run.get_status_display }}</span>
+    </div>
+
+    <div class="run-summary">
+        <dl>
+            <dt>Target</dt>
+            <dd><a href="{% url 'backups:target_detail' target.id %}">{{ target.name }}</a></dd>
+
+            <dt>Trigger</dt>
+            <dd>{{ run.get_trigger_display }}{% if run.triggered_by %} ({{ run.triggered_by }}){% endif %}</dd>
+
+            <dt>Started</dt>
+            <dd>{{ run.started_at|date:"Y-m-d H:i:s" }}</dd>
+
+            {% if run.finished_at %}
+            <dt>Finished</dt>
+            <dd>{{ run.finished_at|date:"Y-m-d H:i:s" }}</dd>
+
+            <dt>Duration</dt>
+            <dd>{{ run.duration_seconds|floatformat:1 }} seconds</dd>
+            {% endif %}
+
+            {% if run.fastdeploy_deployment_id %}
+            <dt>FastDeploy Deployment</dt>
+            <dd>#{{ run.fastdeploy_deployment_id }}</dd>
+            {% endif %}
+        </dl>
+    </div>
+
+    {% if run.status == 'success' %}
+    <div class="run-result">
+        <h3>Backup Result</h3>
+        <dl>
+            <dt>Storage Location</dt>
+            <dd><code>{{ run.storage_bucket }}/{{ run.storage_key }}</code></dd>
+
+            <dt>Size</dt>
+            <dd>{{ run.size_bytes|filesizeformat }} ({{ run.size_bytes|intcomma }} bytes)</dd>
+
+            {% if run.checksum_sha256 %}
+            <dt>SHA256 Checksum</dt>
+            <dd><code class="checksum">{{ run.checksum_sha256 }}</code></dd>
+            {% endif %}
+        </dl>
+    </div>
+    {% endif %}
+
+    {% if run.error_message %}
+    <div class="run-error">
+        <h3>Error</h3>
+        <pre class="error-message">{{ run.error_message }}</pre>
+    </div>
+    {% endif %}
+
+    {% if run.logs %}
+    <div class="run-logs">
+        <h3>Logs</h3>
+        <pre class="log-output">{{ run.logs }}</pre>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

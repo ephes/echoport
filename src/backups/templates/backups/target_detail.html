@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}{{ target.name }} - Echoport{% endblock %}
+
+{% block content %}
+<div class="target-detail">
+    <nav class="breadcrumb">
+        <a href="{% url 'backups:dashboard' %}">Dashboard</a> &raquo;
+        <span>{{ target.name }}</span>
+    </nav>
+
+    <div class="target-header">
+        <h2>{{ target.name }}</h2>
+        <span class="status-badge status-{{ target.status }}">{{ target.get_status_display }}</span>
+    </div>
+
+    {% if target.description %}
+    <p class="description">{{ target.description }}</p>
+    {% endif %}
+
+    <div class="target-config">
+        <h3>Configuration</h3>
+        <dl>
+            <dt>FastDeploy Service</dt>
+            <dd><code>{{ target.fastdeploy_service }}</code></dd>
+
+            {% if target.db_path %}
+            <dt>Database Path</dt>
+            <dd><code>{{ target.db_path }}</code></dd>
+            {% endif %}
+
+            {% if target.backup_files %}
+            <dt>Additional Files</dt>
+            <dd>
+                <ul>
+                {% for file in target.backup_files %}
+                    <li><code>{{ file }}</code></li>
+                {% endfor %}
+                </ul>
+            </dd>
+            {% endif %}
+
+            <dt>Schedule</dt>
+            <dd>{% if target.schedule %}<code>{{ target.schedule }}</code>{% else %}Not scheduled{% endif %}</dd>
+
+            <dt>Retention</dt>
+            <dd>{{ target.retention_days }} days</dd>
+
+            <dt>Timeout</dt>
+            <dd>{{ target.timeout_seconds }} seconds</dd>
+
+            <dt>Storage Bucket</dt>
+            <dd><code>{{ target.storage_bucket }}</code></dd>
+        </dl>
+    </div>
+
+    <div class="target-actions">
+        {% if target.status == 'active' and not active_run %}
+        <form method="post" action="{% url 'backups:trigger_backup' target.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary">Backup Now</button>
+        </form>
+        {% elif active_run %}
+        <p class="running-notice">
+            <span class="spinner"></span>
+            Backup in progress (Run #{{ active_run.id }})
+        </p>
+        {% endif %}
+    </div>
+
+    <div class="run-history">
+        <h3>Backup History</h3>
+
+        {% if runs %}
+        <table class="runs-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Status</th>
+                    <th>Started</th>
+                    <th>Duration</th>
+                    <th>Size</th>
+                    <th>Trigger</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for run in runs %}
+                <tr class="run-row status-{{ run.status }}">
+                    <td><a href="{% url 'backups:run_detail' run.id %}">#{{ run.id }}</a></td>
+                    <td><span class="status-badge status-{{ run.status }}">{{ run.get_status_display }}</span></td>
+                    <td>{{ run.started_at|date:"Y-m-d H:i" }}</td>
+                    <td>{% if run.duration_seconds %}{{ run.duration_seconds|floatformat:1 }}s{% else %}-{% endif %}</td>
+                    <td>{% if run.size_bytes %}{{ run.size_bytes|filesizeformat }}{% else %}-{% endif %}</td>
+                    <td>{{ run.get_trigger_display }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">No backup runs yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
