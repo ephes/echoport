@@ -1,8 +1,8 @@
 # Echoport - Backup Service PRD
 
-**Status**: v1.1 (Phase 1 Deployed & Tested)
+**Status**: v1.2 (Production Deployed)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-28 (Deployed to macmini, security hardening from code review)
+**Last Updated**: 2026-01-28 (Full production deployment with ops-library role)
 
 ---
 
@@ -132,6 +132,8 @@ flowchart LR
 | **Service config** | Deployed to `fastdeploy/services/echoport-backup/config.json` via role | FastDeploy service definition |
 | **MinIO credentials** | Configured via role variables, mc alias on macmini | `echoport_backup_minio_*` vars |
 | **Echoport** | `echoport/` Django app | Scheduling, history, UI, FastDeploy API client |
+| **Deploy role** | `ops-library/roles/echoport_deploy/` | Ansible role for deploying Echoport itself |
+| **Deploy playbook** | `ops-control/playbooks/deploy-echoport.yml` | Playbook with secrets and config |
 
 **Security hardening (ops-library role):**
 - Directory, script, and config.json all owned by `root:root`
@@ -214,6 +216,7 @@ class BackupTarget(models.Model):
 
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
+    icon = models.CharField(max_length=50, blank=True)  # Emoji for dashboard display
     fastdeploy_service = models.CharField(max_length=100)
 
     # What to back up
@@ -326,8 +329,9 @@ class BackupRun(models.Model):
 **echoport:**
 - [ ] Retention policy enforcement (cleanup old backups from MinIO)
 - [ ] Email notification on failure
-- [ ] Add homelab as second backup target
 - [ ] Show file_count in run detail UI
+- [x] Add homelab as backup target (done in v1.2)
+- [x] Add echoport self-backup target (done in v1.2)
 
 ### Phase 5: ops-library Integration (Future)
 
@@ -350,10 +354,67 @@ Before first backup can run:
 4. [x] **Set FastDeploy service token** in echoport `.env` (`FASTDEPLOY_SERVICE_TOKEN`)
 5. [x] **Set FastDeploy base URL** in echoport `.env` (`FASTDEPLOY_BASE_URL=https://deploy.home.xn--wersdrfer-47a.de`)
 6. [x] **Run migrations** on echoport (`just migrate`)
-7. [x] **Create devdata** (`just devdata` - creates nyxmon and fastdeploy targets)
+7. [x] **Create devdata** (`just devdata` - creates nyxmon, homelab, fastdeploy, echoport targets)
 8. [x] **End-to-end test** - backup flow working via CLI (`just backup nyxmon`)
-9. [ ] Create superuser for web UI (`python manage.py createsuperuser`)
-10. [ ] Deploy echoport to macmini (gunicorn + nginx)
+9. [x] **Create superuser** - handled by `ensure_superuser` management command during deployment
+10. [x] **Deploy echoport to macmini** - via `just deploy` (Granian WSGI + Traefik)
+
+---
+
+## Production Deployment
+
+### Deployment Infrastructure
+
+| Component | Details |
+|-----------|---------|
+| **Port** | 10018 |
+| **WSGI Server** | Granian (2 workers) |
+| **User** | `echoport` (system user) |
+| **Site Path** | `/home/echoport/site/` |
+| **Traefik Host** | `echoport.home.xn--wersdrfer-47a.de` |
+| **Auth** | Dual-router (no auth on LAN/Tailscale, basic auth on public) |
+| **URL** | https://echoport.home.xn--wersdrfer-47a.de/ |
+
+### Deployment Files
+
+| Location | Purpose |
+|----------|---------|
+| `ops-library/roles/echoport_deploy/` | Ansible role for deployment |
+| `ops-control/playbooks/deploy-echoport.yml` | Deployment playbook |
+| `ops-control/secrets/prod/echoport.yml` | SOPS-encrypted secrets |
+| `ops-control/justfiles/deploy.just` | `echoport` case in deploy-one |
+
+### Secrets (SOPS-encrypted)
+
+- `django_secret_key` - Django secret key
+- `fastdeploy_base_url` - FastDeploy API URL
+- `fastdeploy_service_token` - Service token for FastDeploy API
+- `admin_username` - Initial admin user
+- `admin_password` - Initial admin password
+
+### Deploy Commands
+
+```bash
+# From echoport directory
+just deploy
+
+# From ops-control directory
+just deploy-one echoport
+```
+
+### Admin User Management
+
+The `ensure_superuser` management command creates/updates the admin user during deployment:
+- Creates user if missing
+- Updates password only if changed (preserves sessions)
+- Raises `CommandError` on missing credentials (fails deployment)
+
+### Homelab Integration
+
+Echoport is listed on the homelab dashboard at https://home.xn--wersdrfer-47a.de/ with:
+- Custom SVG logo (`echoport.svg`)
+- Description: "Backup orchestration service for SQLite databases and config files"
+- Link to https://echoport.home.xn--wersdrfer-47a.de/
 
 ---
 
@@ -419,6 +480,30 @@ Each tarball contains:
 ---
 
 ## Changelog
+
+### v1.2 (2026-01-28)
+- Full production deployment via ops-library role
+- Deployment infrastructure:
+  - New `echoport_deploy` role in ops-library (follows nyxmon pattern)
+  - Granian WSGI server (2 workers) on port 10018
+  - Traefik dual-router pattern (LAN/Tailscale bypass auth)
+  - Systemd service management
+- Admin user management:
+  - New `ensure_superuser` management command
+  - Idempotent: creates if missing, updates password only if changed
+  - Raises CommandError on missing credentials (fails deployment)
+- Dashboard improvements:
+  - Added `icon` field to BackupTarget model (emoji display)
+  - Added homelab, echoport backup targets
+  - Fixed login error CSS class conflict
+- Security (from code review):
+  - `no_log: true` on migrate/collectstatic tasks
+  - Site-specific IPv6 moved from role defaults to playbook
+  - Admin credentials added to services-metadata required_secrets
+- Homelab integration:
+  - Added echoport tile to homelab dashboard
+  - Custom SVG logo (cloud with upload arrow)
+- Deployment: `just deploy` from echoport or `just deploy-one echoport` from ops-control
 
 ### v1.1 (2026-01-28)
 - Deployed to macmini and tested end-to-end
