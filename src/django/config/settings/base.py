@@ -104,6 +104,10 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# Authentication
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/"
+
 # Internationalization
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Europe/Berlin"
