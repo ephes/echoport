@@ -1,8 +1,8 @@
 # Echoport - Backup Service PRD
 
-**Status**: v1.0 (Phase 1 Complete)
+**Status**: v1.1 (Phase 1 Deployed & Tested)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-28 (Post-review implementation complete)
+**Last Updated**: 2026-01-28 (Deployed to macmini, security hardening from code review)
 
 ---
 
@@ -136,7 +136,12 @@ flowchart LR
 **Security hardening (ops-library role):**
 - Directory, script, and config.json all owned by `root:root`
 - Script mode `0755` (readable/executable by all, writable only by root)
+- Two-stage sudo chain: `fastdeploy→deploy→root` (FastDeploy pattern)
 - Sudoers uses `NOPASSWD:NOSETENV` to prevent environment manipulation
+- Path allowlist validation (`/home/`, `/opt/`, `/var/lib/`) prevents file exfiltration
+- Symlink validation at all levels (top-level and nested via copytree ignore callback)
+- Database file existence check prevents sqlite3 creating empty DBs
+- Fail-fast when running as root without config file
 
 ### Backup Script Output
 
@@ -276,8 +281,8 @@ class BackupRun(models.Model):
 - [x] Role deploys `backup.py` script to FastDeploy services directory
 - [x] Role deploys `config.json` for FastDeploy service registration
 - [x] Role configures MinIO credentials via mc alias
-- [x] Security hardening: all files owned by root, NOSETENV in sudoers
-- [ ] **TODO**: Run role via ops-control to register service on macmini
+- [x] Security hardening: root ownership, NOSETENV, path allowlist, symlink validation
+- [x] Deployed via `just register-echoport-backup` in ops-control
 
 **echoport:**
 - [x] Django project setup with uv (`pyproject.toml`, settings, etc.)
@@ -339,15 +344,16 @@ class BackupRun(models.Model):
 
 Before first backup can run:
 
-1. [ ] **Deploy backup role** via ops-control to register service on macmini
-2. [ ] **Configure MinIO credentials** in ops-control vars (`echoport_backup_minio_*`)
-3. [ ] **Set FastDeploy service token** in echoport `.env` (`FASTDEPLOY_SERVICE_TOKEN`)
-4. [ ] **Set FastDeploy base URL** in echoport `.env` (`FASTDEPLOY_BASE_URL`)
-5. [ ] **Run migrations** on echoport (`python manage.py migrate`)
-6. [ ] **Create superuser** (`python manage.py createsuperuser`)
-7. [ ] **Create devdata** or manually add BackupTarget for nyxmon
-8. [ ] **End-to-end test** backup flow
-9. [ ] Deploy echoport to macmini (gunicorn + nginx)
+1. [x] **Deploy backup role** via ops-control: `just register-echoport-backup`
+2. [x] **Configure MinIO credentials** - uses existing minio.yml secrets from ops-control
+3. [x] **Create MinIO bucket** - `mc mb minio/backups` on macmini
+4. [x] **Set FastDeploy service token** in echoport `.env` (`FASTDEPLOY_SERVICE_TOKEN`)
+5. [x] **Set FastDeploy base URL** in echoport `.env` (`FASTDEPLOY_BASE_URL=https://deploy.home.xn--wersdrfer-47a.de`)
+6. [x] **Run migrations** on echoport (`just migrate`)
+7. [x] **Create devdata** (`just devdata` - creates nyxmon and fastdeploy targets)
+8. [x] **End-to-end test** - backup flow working via CLI (`just backup nyxmon`)
+9. [ ] Create superuser for web UI (`python manage.py createsuperuser`)
+10. [ ] Deploy echoport to macmini (gunicorn + nginx)
 
 ---
 
@@ -373,6 +379,35 @@ Before first backup can run:
 
 ---
 
+## Current Test Results
+
+As of 2026-01-28, backups are working end-to-end:
+
+```
+$ just backup nyxmon
+Backup completed successfully!
+  Run ID: 11
+  Storage: backups/nyxmon/2026-01-28T19-27-57.tar.gz
+  Size: 185,663 bytes
+  Duration: 5.3s
+```
+
+MinIO contains multiple successful backups:
+```
+$ mc ls -r minio/backups/nyxmon/
+[2026-01-28 18:14:30 CET] 181KiB 2026-01-28T17-14-29.tar.gz
+[2026-01-28 18:15:26 CET] 181KiB 2026-01-28T17-15-24.tar.gz
+... (9 backups total)
+```
+
+Each tarball contains:
+- `db.sqlite3` - NyxMon database backup
+- `pyproject.toml` - Project config
+- `uv.lock` - Dependency lock file
+- `manifest.json` - Backup metadata
+
+---
+
 ## Open Questions for Later
 
 1. **Multi-host**: Currently assuming macmini only. How to add other hosts?
@@ -384,6 +419,21 @@ Before first backup can run:
 ---
 
 ## Changelog
+
+### v1.1 (2026-01-28)
+- Deployed to macmini and tested end-to-end
+- Security hardening from code review:
+  - Path allowlist validation (defense-in-depth against file exfiltration)
+  - Symlink validation at all levels (top-level and nested)
+  - Proper path normalization to prevent `/home` matching `/homeevil`
+  - Database existence check before sqlite3 backup
+  - Fail-fast when running as root without config
+- Fixed two-stage sudo chain (`fastdeploy→deploy→root`)
+- Fixed root elevation (subprocess.run instead of os.execvp)
+- Fixed ECHOPORT_RESULT delivery (update_step instead of output_step)
+- Created MinIO backups bucket
+- ops-control playbook: `playbooks/register-echoport-backup.yml`
+- ops-control shortcut: `just register-echoport-backup`
 
 ### v1.0 (2026-01-28)
 - Phase 1 complete
