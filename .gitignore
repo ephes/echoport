@@ -1,5 +1,4 @@
-# markdown specifications
-specs/
+# Keep specs in version control (design decisions are documentation)
 
 # Python
 __pycache__/
