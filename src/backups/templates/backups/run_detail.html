@@ -52,6 +52,11 @@
             <dt>Size</dt>
             <dd>{{ run.size_bytes|filesizeformat }} ({{ run.size_bytes|intcomma }} bytes)</dd>
 
+            {% if run.file_count %}
+            <dt>Files</dt>
+            <dd>{{ run.file_count }} file{{ run.file_count|pluralize }}</dd>
+            {% endif %}
+
             {% if run.checksum_sha256 %}
             <dt>SHA256 Checksum</dt>
             <dd><code class="checksum">{{ run.checksum_sha256 }}</code></dd>

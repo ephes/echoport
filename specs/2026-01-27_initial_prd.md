@@ -1,8 +1,8 @@
 # Echoport - Backup Service PRD
 
-**Status**: v1.5 (Restore Working)
+**Status**: v1.6 (Health Endpoint)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-29 (Phase 3 complete: restore tested and working)
+**Last Updated**: 2026-01-29 (Phase 4 progress: file_count UI, health endpoint)
 
 ---
 
@@ -405,8 +405,8 @@ class RestoreRun(models.Model):
 
 **echoport:**
 - [ ] Retention policy enforcement (cleanup old backups from MinIO)
-- [ ] Email notification on failure
-- [ ] Show file_count in run detail UI
+- [x] Show file_count in run detail UI
+- [x] Health/status JSON endpoint for NyxMon monitoring (`/api/health/`)
 - [x] Add homelab as backup target (done in v1.2)
 - [x] Add echoport self-backup target (done in v1.2)
 
@@ -581,6 +581,18 @@ All restore steps captured by FastDeploy:
 ---
 
 ## Changelog
+
+### v1.6 (2026-01-29)
+- Phase 4 progress: UI improvements and monitoring endpoint
+- Show `file_count` in run detail UI (backup result section)
+- New health/status JSON endpoint at `/api/health/`
+  - Public endpoint (no auth) for NyxMon integration
+  - Returns overall status: healthy, degraded, or unhealthy
+  - Per-target status with overdue detection based on cron schedule
+  - Recent failures list (last 7 days, max 10 entries)
+  - NyxMon can alert on `status != "healthy"` or `overdue == true`
+- Removed email notification from roadmap (using NyxMon instead)
+- 10 new tests for health endpoint
 
 ### v1.5 (2026-01-29)
 - Restore functionality tested and working end-to-end

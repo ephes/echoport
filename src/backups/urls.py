@@ -34,4 +34,6 @@ urlpatterns = [
         views.restore_status,
         name="restore_status",
     ),
+    # Health endpoint for monitoring (public, no auth)
+    path("api/health/", views.health_status, name="health_status"),
 ]

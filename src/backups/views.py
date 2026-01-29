@@ -4,12 +4,16 @@ Views for Echoport backup dashboard.
 
 import logging
 import threading
+from datetime import datetime
 
+from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.db import close_old_connections, transaction
 from django.db.models import Prefetch
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from .backup_engine import get_active_run, start_backup, _mark_run_failed
@@ -378,3 +382,122 @@ def restore_status(request, restore_id):
         response[key] = value
 
     return response
+
+
+def health_status(request):
+    """
+    Public JSON endpoint for monitoring systems (e.g., NyxMon).
+
+    Returns overall health status and per-target backup status.
+    No authentication required so external monitoring can poll it.
+
+    Security: Does not expose error messages (may contain paths/tokens).
+    """
+    now = timezone.now()
+    targets = BackupTarget.objects.filter(status=BackupStatus.ACTIVE)
+
+    target_statuses = []
+    recent_failures = []
+    any_overdue = False
+    any_failures = False
+    any_invalid_schedule = False
+
+    for target in targets:
+        last_success = target.get_last_successful_run()
+        last_run = target.get_last_run()
+
+        # Calculate next scheduled time and overdue status
+        next_scheduled = None
+        overdue = False
+        overdue_hours = None
+        invalid_schedule = False
+
+        if target.schedule:
+            try:
+                cron = croniter(target.schedule, now)
+                next_scheduled_dt = cron.get_next(datetime)
+                # Ensure timezone-aware for consistent ISO output
+                if timezone.is_naive(next_scheduled_dt):
+                    next_scheduled_dt = timezone.make_aware(next_scheduled_dt)
+                next_scheduled = next_scheduled_dt
+
+                # Check if overdue: last success should be after the previous scheduled time
+                prev_scheduled = croniter(target.schedule, now).get_prev(datetime)
+                # Ensure timezone-aware for comparison
+                if timezone.is_naive(prev_scheduled):
+                    prev_scheduled = timezone.make_aware(prev_scheduled)
+
+                if last_success:
+                    if last_success.started_at < prev_scheduled:
+                        overdue = True
+                        overdue_hours = round((now - prev_scheduled).total_seconds() / 3600, 1)
+                        any_overdue = True
+                else:
+                    # No successful backup ever - considered overdue if scheduled
+                    overdue = True
+                    any_overdue = True
+            except (KeyError, ValueError, CroniterBadCronError, CroniterBadDateError):
+                # Invalid cron expression - surface this to operators
+                invalid_schedule = True
+                any_invalid_schedule = True
+
+        # Determine target status (order matters: overdue > invalid > failed/timeout > ok)
+        if overdue:
+            status = "overdue"
+        elif invalid_schedule:
+            status = "invalid_schedule"
+        elif last_run and last_run.status in [BackupRunStatus.FAILED, BackupRunStatus.TIMEOUT]:
+            status = "last_failed"
+            any_failures = True
+        else:
+            status = "ok"
+
+        target_info = {
+            "name": target.name,
+            "status": status,
+            "last_successful_backup": (
+                last_success.started_at.isoformat() if last_success else None
+            ),
+            "next_scheduled": next_scheduled.isoformat() if next_scheduled else None,
+            "overdue": overdue,
+        }
+        if overdue_hours is not None:
+            target_info["overdue_hours"] = overdue_hours
+
+        target_statuses.append(target_info)
+
+        # Collect recent failures (last 7 days)
+        # Security: Only expose status and timestamp, not error messages
+        failed_runs = target.runs.filter(
+            status__in=[BackupRunStatus.FAILED, BackupRunStatus.TIMEOUT],
+            started_at__gte=now - timezone.timedelta(days=7),
+        ).order_by("-started_at")[:5]
+
+        for run in failed_runs:
+            any_failures = True
+            recent_failures.append({
+                "target": target.name,
+                "timestamp": run.started_at.isoformat(),
+                "status": run.status,
+            })
+
+    # Determine overall status
+    # unhealthy = overdue backups (data at risk)
+    # degraded = recent failures or invalid schedules (needs attention)
+    # healthy = all good
+    if any_overdue:
+        overall_status = "unhealthy"
+    elif any_failures or any_invalid_schedule:
+        overall_status = "degraded"
+    else:
+        overall_status = "healthy"
+
+    # Sort failures by timestamp (newest first)
+    recent_failures.sort(key=lambda x: x["timestamp"], reverse=True)
+
+    return JsonResponse({
+        "status": overall_status,
+        "checked_at": now.isoformat(),
+        "targets": target_statuses,
+        "recent_failures": recent_failures[:10],  # Limit to 10 most recent
+    })
