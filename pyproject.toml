@@ -52,3 +52,17 @@ pythonpath = [
 
 [tool.mypy]
 files = ["src/"]
+plugins = ["mypy_django_plugin.main"]
+mypy_path = "src/django:src"
+
+[[tool.mypy.overrides]]
+module = [
+    "environ",
+    "dj_database_url",
+    "debug_toolbar",
+    "debug_toolbar.*",
+]
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
