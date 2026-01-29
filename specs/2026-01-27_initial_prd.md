@@ -1,8 +1,8 @@
 # Echoport - Backup Service PRD
 
-**Status**: v1.4 (Restore Functionality)
+**Status**: v1.5 (Restore Working)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-29 (Phase 3 complete: restore from backups)
+**Last Updated**: 2026-01-29 (Phase 3 complete: restore tested and working)
 
 ---
 
@@ -128,6 +128,7 @@ flowchart LR
 | **Safe tarball extraction** | Rejects path traversal, symlinks outside dest, device nodes, FIFOs. Prevents malicious archive attacks. |
 | **Fail on missing ECHOPORT_RESULT (restore)** | Unlike backup, restore with no result is treated as failure - avoids hiding partial restores. |
 | **Pre-created runs marked failed** | If preconditions fail after UI creates PENDING run, run is marked FAILED before exception raised. |
+| **FastDeploy stdout drain fix** | FastDeploy had a race condition where it checked `proc.returncode` after `readline()` but before processing data, discarding output when subprocess exited quickly. Fixed by removing the premature exit check - loop now exits only on EOF. |
 
 ### Where Things Live (Phase 1)
 
@@ -553,6 +554,20 @@ Target schedules configured:
 - homelab: `0 2 * * *` (daily at 2am)
 - echoport: `0 4 * * *` (daily at 4am)
 
+Restore tested and working:
+```sql
+SELECT id, status, files_restored, started_at FROM restore_run ORDER BY id DESC LIMIT 1;
+6 | success | 3 | 2026-01-29 22:16:11
+```
+
+All restore steps captured by FastDeploy:
+- init → success
+- download → success (184,934 bytes)
+- verify → success (checksum verified)
+- extract → success
+- restore → success (3 files)
+- result → success (ECHOPORT_RESULT with metadata)
+
 ---
 
 ## Open Questions for Later
@@ -566,6 +581,16 @@ Target schedules configured:
 ---
 
 ## Changelog
+
+### v1.5 (2026-01-29)
+- Restore functionality tested and working end-to-end
+- Fixed FastDeploy race condition that caused restore failures
+  - FastDeploy's `DeployTask.deploy_steps()` checked `proc.returncode` after `readline()` but before processing data
+  - When subprocess finished quickly, remaining stdout was discarded
+  - Fix: removed premature exit check, loop now exits only on EOF (empty `readline()`)
+  - Added regression test: `test_deploy_steps_drains_stdout_after_process_exits`
+- FastDeploy commits: `1b0f4ff` (fix), `cbea60f` (test)
+- First successful restore: nyxmon restore #6 (3 files restored)
 
 ### v1.4 (2026-01-29)
 - Phase 3 complete: restore from backups
