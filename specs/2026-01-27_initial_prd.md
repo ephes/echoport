@@ -1,8 +1,8 @@
 # Echoport - Backup Service PRD
 
-**Status**: v1.2 (Production Deployed)
+**Status**: v1.3 (Scheduled Backups)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-28 (Full production deployment with ops-library role)
+**Last Updated**: 2026-01-29 (Phase 2 complete: scheduled backups via cron)
 
 ---
 
@@ -303,16 +303,32 @@ class BackupRun(models.Model):
 - [x] Target status enforcement (only ACTIVE targets can be backed up)
 - [x] file_count field for tracking number of files in backup
 
-### Phase 2: Scheduled Backups (Next)
+### Phase 2: Scheduled Backups ✅ COMPLETE
 
 **echoport:**
-- [ ] Add `croniter` dependency for cron expression evaluation
-- [ ] Management command: `python manage.py run_scheduled_backups`
+- [x] Add `croniter` dependency for cron expression evaluation
+- [x] Management command: `python manage.py run_scheduled_backups`
   - Uses `croniter` to check if each target is due based on `schedule` field
-  - Tracks `last_scheduled_at` to prevent duplicate runs
-- [ ] System cron: `*/5 * * * * cd /path/to/echoport && python manage.py run_scheduled_backups`
-- [ ] Dashboard: show schedule, last run time, next run time
-- [ ] Add tests for scheduled backup logic
+  - Compares last scheduled run's `started_at` against most recent scheduled time
+  - File lock (`fcntl.flock`) prevents overlapping scheduler instances
+  - Proper exit codes: 0 on success, 1 on failures (for monitoring)
+  - `--dry-run` flag for testing
+- [x] Model method: `BackupTarget.get_last_scheduled_run()` returns most recent run with `trigger=scheduled`
+- [x] Template tag: `{% next_scheduled_run target as next_run %}` calculates next run time
+- [x] Dashboard: shows schedule and next run time on target cards
+- [x] 20 tests for scheduled backup logic (is_due, model method, template tag, command)
+
+**ops-library:**
+- [x] Scheduler cron job in `echoport_deploy` role
+  - Runs every 5 minutes: `*/5 * * * *`
+  - Sets `DJANGO_SETTINGS_MODULE` for production settings
+  - Logs to `/home/echoport/logs/scheduler.log`
+- [x] `echoport_scheduler_enabled` and `echoport_scheduler_interval` variables
+- [x] `ECHOPORT_CACHE_DIR` in .env for secure lock file location
+
+**Settings changes:**
+- [x] Load `.env` from site root first (production), then `BASE_DIR` (local dev)
+- [x] `ECHOPORT_CACHE_DIR` setting for controlled lock file location
 
 ### Phase 3: Restore
 
@@ -374,6 +390,7 @@ Before first backup can run:
 | **Traefik Host** | `echoport.home.xn--wersdrfer-47a.de` |
 | **Auth** | Dual-router (no auth on LAN/Tailscale, basic auth on public) |
 | **URL** | https://echoport.home.xn--wersdrfer-47a.de/ |
+| **Scheduler** | Cron every 5 minutes, logs to `/home/echoport/logs/scheduler.log` |
 
 ### Deployment Files
 
@@ -442,30 +459,34 @@ Echoport is listed on the homelab dashboard at https://home.xn--wersdrfer-47a.de
 
 ## Current Test Results
 
-As of 2026-01-28, backups are working end-to-end:
+As of 2026-01-29, scheduled backups are working:
 
 ```
-$ just backup nyxmon
-Backup completed successfully!
-  Run ID: 11
-  Storage: backups/nyxmon/2026-01-28T19-27-57.tar.gz
-  Size: 185,663 bytes
-  Duration: 5.3s
+$ python manage.py run_scheduled_backups --dry-run
+Checking 3 scheduled targets...
+  [DRY RUN] Would trigger backup for 'echoport'
+  [DRY RUN] Would trigger backup for 'homelab'
+  [DRY RUN] Would trigger backup for 'nyxmon'
+Dry run complete: 3 would run, 0 not due
 ```
 
-MinIO contains multiple successful backups:
+Cron log shows successful scheduled runs:
 ```
-$ mc ls -r minio/backups/nyxmon/
-[2026-01-28 18:14:30 CET] 181KiB 2026-01-28T17-14-29.tar.gz
-[2026-01-28 18:15:26 CET] 181KiB 2026-01-28T17-15-24.tar.gz
-... (9 backups total)
+2026-01-29T18:35:01 CRON (echoport) CMD (cd /home/echoport/site && ...)
 ```
 
-Each tarball contains:
-- `db.sqlite3` - NyxMon database backup
-- `pyproject.toml` - Project config
-- `uv.lock` - Dependency lock file
-- `manifest.json` - Backup metadata
+Database shows scheduled backups completed:
+```sql
+SELECT name, status, trigger, started_at FROM backup_run JOIN backup_target ON ...
+nyxmon   | success | scheduled | 2026-01-29 17:35:12
+homelab  | success | scheduled | 2026-01-29 17:35:06
+echoport | success | scheduled | 2026-01-29 17:35:01
+```
+
+Target schedules configured:
+- nyxmon: `0 2 * * *` (daily at 2am)
+- homelab: `0 2 * * *` (daily at 2am)
+- echoport: `0 4 * * *` (daily at 4am)
 
 ---
 
@@ -480,6 +501,23 @@ Each tarball contains:
 ---
 
 ## Changelog
+
+### v1.3 (2026-01-29)
+- Phase 2 complete: scheduled backups
+- New management command: `run_scheduled_backups`
+  - Uses croniter for cron expression parsing
+  - File lock prevents overlapping instances
+  - Exit code 1 on failures for monitoring
+  - `--dry-run` flag for testing
+- New model method: `BackupTarget.get_last_scheduled_run()`
+- New template tag: `next_scheduled_run` shows next run time in dashboard
+- Settings: `.env` loading checks site root then BASE_DIR (supports both production and local dev)
+- Settings: `ECHOPORT_CACHE_DIR` for secure lock file location
+- ops-library: scheduler cron job in `echoport_deploy` role
+  - Configurable via `echoport_scheduler_enabled` and `echoport_scheduler_interval`
+  - Logs to `/home/echoport/logs/scheduler.log`
+- 20 new tests for scheduling logic
+- First successful scheduled backups: nyxmon, homelab, echoport
 
 ### v1.2 (2026-01-28)
 - Full production deployment via ops-library role
