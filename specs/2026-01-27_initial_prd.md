@@ -1,8 +1,8 @@
 # Echoport - Backup Service PRD
 
-**Status**: v1.3 (Scheduled Backups)
+**Status**: v1.4 (Restore Functionality)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-29 (Phase 2 complete: scheduled backups via cron)
+**Last Updated**: 2026-01-29 (Phase 3 complete: restore from backups)
 
 ---
 
@@ -122,6 +122,12 @@ flowchart LR
 | **existing_run parameter** | `start_backup(target, existing_run=run)` allows view to create run, thread to continue it. Single implementation, no duplication. |
 | **close_old_connections()** | Background threads must manage DB connections explicitly to avoid leaks. |
 | **All views require @login_required** | Prevents unauthorized access to dashboard and backup triggers. |
+| **Restore requires @staff_member_required** | Restore is destructive - limits to admin users. |
+| **Cross-lock backup/restore** | Uses `select_for_update` on PostgreSQL to prevent backup during restore and vice versa. Falls back to constraint-based protection on SQLite. |
+| **Checksum required for restore** | Prevents restoring from backups without integrity verification. |
+| **Safe tarball extraction** | Rejects path traversal, symlinks outside dest, device nodes, FIFOs. Prevents malicious archive attacks. |
+| **Fail on missing ECHOPORT_RESULT (restore)** | Unlike backup, restore with no result is treated as failure - avoids hiding partial restores. |
+| **Pre-created runs marked failed** | If preconditions fail after UI creates PENDING run, run is marked FAILED before exception raised. |
 
 ### Where Things Live (Phase 1)
 
@@ -226,6 +232,9 @@ class BackupTarget(models.Model):
     # Scheduling (Phase 2)
     schedule = models.CharField(max_length=100, blank=True)  # Cron expression
 
+    # Restore (Phase 3)
+    service_name = models.CharField(max_length=100, blank=True)  # Systemd service to stop/start during restore
+
     # Status
     status = models.CharField(max_length=20, choices=BackupStatus.choices, default="active")
     retention_days = models.PositiveIntegerField(default=30)
@@ -269,6 +278,41 @@ class BackupRun(models.Model):
                 fields=["target"],
                 condition=models.Q(status__in=["pending", "running"]),
                 name="unique_active_backup_per_target",
+            )
+        ]
+
+
+class RestoreRun(models.Model):
+    """Individual restore execution record (Phase 3)."""
+
+    backup_run = models.ForeignKey(BackupRun, on_delete=models.PROTECT, related_name="restores")
+    target = models.ForeignKey(BackupTarget, on_delete=models.CASCADE, related_name="restore_runs")
+    status = models.CharField(max_length=20, choices=RestoreRunStatus.choices, default="pending")
+    trigger = models.CharField(max_length=20, choices=RestoreTrigger.choices, default="manual")
+    triggered_by = models.CharField(max_length=100, blank=True)
+
+    # FastDeploy tracking
+    fastdeploy_deployment_id = models.PositiveIntegerField(null=True, blank=True)
+
+    # Result data
+    files_restored = models.PositiveIntegerField(null=True, blank=True)
+
+    # Error tracking
+    error_message = models.TextField(blank=True)
+    logs = models.TextField(blank=True)
+
+    # Timestamps
+    started_at = models.DateTimeField(default=timezone.now)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+        constraints = [
+            # Prevent concurrent restores for the same target
+            models.UniqueConstraint(
+                fields=["target"],
+                condition=models.Q(status__in=["pending", "running"]),
+                name="unique_active_restore_per_target",
             )
         ]
 ```
@@ -330,15 +374,31 @@ class BackupRun(models.Model):
 - [x] Load `.env` from site root first (production), then `BASE_DIR` (local dev)
 - [x] `ECHOPORT_CACHE_DIR` setting for controlled lock file location
 
-### Phase 3: Restore
+### Phase 3: Restore ✅ COMPLETE
 
-**fastdeploy:**
-- [ ] Add restore action to backup service
+**ops-library:**
+- [x] Extended `backup.py` script to handle restore action (`ECHOPORT_ACTION=restore`)
+- [x] Restore flow: download from MinIO → verify checksum → extract → stop service → restore files → start service
+- [x] Safe tarball extraction (rejects path traversal, symlinks outside dest, device nodes, FIFOs)
+- [x] Updated `config.json` steps to include restore steps (download, verify, extract, stop, restore, start)
 
 **echoport:**
-- [ ] RestoreRun model and tracking
-- [ ] Restore button in UI with confirmation dialog
-- [ ] Restore flow: select backup → trigger FastDeploy → monitor
+- [x] `RestoreRun` model with same pattern as `BackupRun`
+  - Unique constraint prevents concurrent restores per target
+  - Links to source `BackupRun` for traceability
+- [x] `service_name` field on `BackupTarget` for service stop/start during restore
+- [x] `restore_engine.py` - synchronous orchestration mirroring `backup_engine.py`
+- [x] Cross-lock between backup and restore operations
+  - Uses `select_for_update` on PostgreSQL for atomic locking
+  - Falls back to constraint-based protection on SQLite
+  - Pre-created runs marked as failed if preconditions fail
+- [x] Views: `trigger_restore`, `restore_detail`, `restore_status` (HTMX polling)
+- [x] `@staff_member_required` on restore endpoint (destructive operation)
+- [x] UI: restore section on run detail page with confirmation dialog
+  - Shows warning about service stop/restart
+  - Disabled when backup/restore already running or checksum missing
+- [x] Templates: `restore_detail.html`, `partials/restore_status.html`
+- [x] CSS: restore section, danger button, confirmation dialog styles
 
 ### Phase 4: Polish
 
@@ -454,6 +514,11 @@ Echoport is listed on the homelab dashboard at https://home.xn--wersdrfer-47a.de
 | Result delivery? | **Step message** - ECHOPORT_RESULT embedded in step, avoids 4KB truncation |
 | Manifest in result? | **No** - only file_count sent, full manifest in tarball |
 | Script ownership? | **Root** - prevents privilege escalation |
+| Restore permission? | **Staff only** - destructive operation requires admin |
+| Restore without checksum? | **Blocked** - integrity verification required |
+| Missing ECHOPORT_RESULT on restore? | **Failure** - unlike backup, restore must confirm completion |
+| Concurrent backup/restore? | **Cross-locked** - select_for_update on PostgreSQL, constraints on SQLite |
+| Tarball safety? | **Strict validation** - reject traversal, symlinks, devices, FIFOs |
 
 ---
 
@@ -501,6 +566,33 @@ Target schedules configured:
 ---
 
 ## Changelog
+
+### v1.4 (2026-01-29)
+- Phase 3 complete: restore from backups
+- New `RestoreRun` model mirroring `BackupRun` structure
+  - Links to source backup for traceability
+  - UniqueConstraint prevents concurrent restores per target
+- New `service_name` field on `BackupTarget` for service stop/start during restore
+- New `restore_engine.py` following `backup_engine.py` patterns
+  - Synchronous orchestration with FastDeploy polling
+  - Cross-lock with backup operations via `select_for_update` (PostgreSQL) / constraints (SQLite)
+  - Pre-created runs marked failed if preconditions fail
+- New views: `trigger_restore`, `restore_detail`, `restore_status`
+  - `@staff_member_required` on trigger_restore (destructive operation)
+  - HTMX polling for status updates
+- New templates: `restore_detail.html`, `partials/restore_status.html`
+- UI: restore section on run detail page
+  - Confirmation dialog with warning about service stop/restart
+  - Disabled when backup/restore already running or checksum missing
+- CSS: restore section, danger button, confirmation dialog styles
+- ops-library: extended `backup.py` to handle restore action
+  - Download from MinIO → verify SHA256 → extract → stop service → restore → start service
+  - Safe tarball extraction (rejects path traversal, symlinks, device nodes, FIFOs)
+  - Any file restoration error fails the entire restore
+- Security improvements from code review:
+  - Checksum required for restore (MissingChecksumError)
+  - Cross-lock prevents backup during restore and vice versa
+  - Narrowed exception handling (OperationalError only for lock contention)
 
 ### v1.3 (2026-01-29)
 - Phase 2 complete: scheduled backups

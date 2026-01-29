@@ -1,0 +1,4 @@
+<span class="status-badge status-{{ restore.status }}">
+    {% if restore.is_active %}<span class="spinner"></span> {% endif %}
+    {{ restore.get_status_display }}
+</span>

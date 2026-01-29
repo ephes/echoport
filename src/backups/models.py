@@ -48,6 +48,11 @@ class BackupTarget(models.Model):
         max_length=100,
         help_text="Name of the FastDeploy service to use for backups",
     )
+    service_name = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Systemd service to stop during restore (e.g., 'nyxmon.service')",
+    )
 
     # Backup source configuration - passed to FastDeploy as context
     db_path = models.CharField(
@@ -214,3 +219,108 @@ class BackupRun(models.Model):
     def is_active(self):
         """Check if this backup run is still in progress."""
         return self.status in [BackupRunStatus.PENDING, BackupRunStatus.RUNNING]
+
+
+class RestoreRunStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    RUNNING = "running", "Running"
+    SUCCESS = "success", "Success"
+    FAILED = "failed", "Failed"
+    TIMEOUT = "timeout", "Timeout"
+
+
+class RestoreTrigger(models.TextChoices):
+    MANUAL = "manual", "Manual"
+    API = "api", "API"
+
+
+class RestoreRun(models.Model):
+    """
+    Individual restore execution record.
+    """
+
+    backup_run = models.ForeignKey(
+        BackupRun,
+        on_delete=models.PROTECT,
+        related_name="restores",
+        help_text="The backup run being restored from",
+    )
+    target = models.ForeignKey(
+        BackupTarget,
+        on_delete=models.CASCADE,
+        related_name="restore_runs",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=RestoreRunStatus.choices,
+        default=RestoreRunStatus.PENDING,
+    )
+    trigger = models.CharField(
+        max_length=20,
+        choices=RestoreTrigger.choices,
+        default=RestoreTrigger.MANUAL,
+    )
+    triggered_by = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="User or system that triggered this restore",
+    )
+
+    # FastDeploy tracking
+    fastdeploy_deployment_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="FastDeploy deployment ID for this restore",
+    )
+
+    # Restore result data
+    files_restored = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Number of files restored",
+    )
+
+    # Error handling
+    error_message = models.TextField(
+        blank=True,
+    )
+    logs = models.TextField(
+        blank=True,
+        help_text="Captured output from the restore process",
+    )
+
+    # Timestamps
+    started_at = models.DateTimeField(
+        default=timezone.now,
+    )
+    finished_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = "restore_run"
+        ordering = ["-started_at"]
+        constraints = [
+            # Prevent concurrent restores for the same target
+            models.UniqueConstraint(
+                fields=["target"],
+                condition=models.Q(status__in=["pending", "running"]),
+                name="unique_active_restore_per_target",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Restore #{self.id} from backup #{self.backup_run_id}"
+
+    @property
+    def duration_seconds(self):
+        """Calculate restore duration in seconds."""
+        if self.finished_at and self.started_at:
+            return (self.finished_at - self.started_at).total_seconds()
+        return None
+
+    @property
+    def is_active(self):
+        """Check if this restore run is still in progress."""
+        return self.status in [RestoreRunStatus.PENDING, RestoreRunStatus.RUNNING]

@@ -73,5 +73,50 @@
         <pre class="log-output">{{ run.logs }}</pre>
     </div>
     {% endif %}
+
+    {% if run.status == 'success' and user.is_staff %}
+    <div class="restore-section">
+        <h3>Restore from this Backup</h3>
+        <div class="restore-warning">
+            <strong>Warning:</strong> Restoring will overwrite the current database and files for {{ target.name }}.
+            {% if target.service_name %}The service <code>{{ target.service_name }}</code> will be stopped during restore and restarted afterward.{% endif %}
+            This action cannot be undone.
+        </div>
+
+        {% if not run.checksum_sha256 %}
+        <p class="restore-blocked">This backup has no checksum and cannot be safely restored.</p>
+        {% elif active_backup %}
+        <p class="restore-blocked">A backup is currently running. Please wait for it to complete before restoring.</p>
+        {% elif active_restore %}
+        <p class="restore-blocked">A restore is currently running. <a href="{% url 'backups:restore_detail' active_restore.id %}">View progress</a></p>
+        {% else %}
+        <button type="button" class="btn btn-danger" onclick="document.getElementById('restore-dialog').showModal()">
+            Restore Now
+        </button>
+
+        <dialog id="restore-dialog" class="confirm-dialog">
+            <h4>Confirm Restore</h4>
+            <p>Are you sure you want to restore from this backup?</p>
+            <p>This will:</p>
+            <ul>
+                {% if target.service_name %}<li>Stop the <code>{{ target.service_name }}</code> service</li>{% endif %}
+                <li>Overwrite the current database{% if target.backup_files %} and {{ target.backup_files|length }} file(s){% endif %}</li>
+                {% if target.service_name %}<li>Restart the <code>{{ target.service_name }}</code> service</li>{% endif %}
+            </ul>
+            <div class="dialog-actions">
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('restore-dialog').close()">
+                    Cancel
+                </button>
+                <form method="post" action="{% url 'backups:trigger_restore' run.id %}" style="display: inline;">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger">
+                        Yes, Restore Now
+                    </button>
+                </form>
+            </div>
+        </dialog>
+        {% endif %}
+    </div>
+    {% endif %}
 </div>
 {% endblock %}

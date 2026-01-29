@@ -23,6 +23,7 @@ class Command(BaseCommand):
                     "description": "NyxMon monitoring service database and configuration",
                     "icon": "📊",
                     "fastdeploy_service": "echoport-backup",
+                    "service_name": "nyxmon.service",
                     "db_path": "/home/nyxmon/site/db.sqlite3",
                     "backup_files": [
                         "/home/nyxmon/site/pyproject.toml",
@@ -41,6 +42,7 @@ class Command(BaseCommand):
                     "description": "Homelab Django app - home infrastructure dashboard",
                     "icon": "🏠",
                     "fastdeploy_service": "echoport-backup",
+                    "service_name": "homelab.service",
                     "db_path": "/home/homelab/site/db.sqlite3",
                     "backup_files": [
                         "/home/homelab/site/pyproject.toml",
@@ -59,6 +61,7 @@ class Command(BaseCommand):
                     "description": "FastDeploy deployment service (PostgreSQL + services)",
                     "icon": "🚀",
                     "fastdeploy_service": "echoport-backup",
+                    "service_name": "fastdeploy.service",
                     "db_path": "",  # PostgreSQL, handled differently
                     "backup_files": [
                         "/home/fastdeploy/site/services",
@@ -76,6 +79,7 @@ class Command(BaseCommand):
                     "description": "Echoport backup service database",
                     "icon": "🔄",
                     "fastdeploy_service": "echoport-backup",
+                    "service_name": "echoport.service",
                     "db_path": "/home/echoport/site/db.sqlite3",
                     "backup_files": [
                         "/home/echoport/site/pyproject.toml",

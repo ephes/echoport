@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% load humanize %}
+
+{% block title %}Restore #{{ restore.id }} - Echoport{% endblock %}
+
+{% block content %}
+<div class="run-detail">
+    <nav class="breadcrumb">
+        <a href="{% url 'backups:dashboard' %}">Dashboard</a> &raquo;
+        <a href="{% url 'backups:target_detail' target.id %}">{{ target.name }}</a> &raquo;
+        <a href="{% url 'backups:run_detail' backup_run.id %}">Backup #{{ backup_run.id }}</a> &raquo;
+        <span>Restore #{{ restore.id }}</span>
+    </nav>
+
+    <div class="run-header">
+        <h2>Restore #{{ restore.id }}</h2>
+        <div id="restore-status"
+             {% if restore.is_active %}
+             hx-get="{% url 'backups:restore_status' restore.id %}"
+             hx-trigger="load delay:2s, continuePolling from:body delay:2s"
+             hx-swap="innerHTML"
+             {% endif %}>
+            {% include "backups/partials/restore_status.html" %}
+        </div>
+    </div>
+
+    <div class="run-summary">
+        <dl>
+            <dt>Target</dt>
+            <dd><a href="{% url 'backups:target_detail' target.id %}">{{ target.name }}</a></dd>
+
+            <dt>Restoring From</dt>
+            <dd><a href="{% url 'backups:run_detail' backup_run.id %}">Backup #{{ backup_run.id }}</a> ({{ backup_run.started_at|date:"Y-m-d H:i:s" }})</dd>
+
+            <dt>Trigger</dt>
+            <dd>{{ restore.get_trigger_display }}{% if restore.triggered_by %} ({{ restore.triggered_by }}){% endif %}</dd>
+
+            <dt>Started</dt>
+            <dd>{{ restore.started_at|date:"Y-m-d H:i:s" }}</dd>
+
+            {% if restore.finished_at %}
+            <dt>Finished</dt>
+            <dd>{{ restore.finished_at|date:"Y-m-d H:i:s" }}</dd>
+
+            <dt>Duration</dt>
+            <dd>{{ restore.duration_seconds|floatformat:1 }} seconds</dd>
+            {% endif %}
+
+            {% if restore.fastdeploy_deployment_id %}
+            <dt>FastDeploy Deployment</dt>
+            <dd>#{{ restore.fastdeploy_deployment_id }}</dd>
+            {% endif %}
+        </dl>
+    </div>
+
+    {% if restore.status == 'success' %}
+    <div class="run-result">
+        <h3>Restore Result</h3>
+        <dl>
+            <dt>Source Backup</dt>
+            <dd><code>{{ backup_run.storage_bucket }}/{{ backup_run.storage_key }}</code></dd>
+
+            {% if restore.files_restored %}
+            <dt>Files Restored</dt>
+            <dd>{{ restore.files_restored|intcomma }}</dd>
+            {% endif %}
+        </dl>
+    </div>
+    {% endif %}
+
+    {% if restore.error_message %}
+    <div class="run-error">
+        <h3>Error</h3>
+        <pre class="error-message">{{ restore.error_message }}</pre>
+    </div>
+    {% endif %}
+
+    {% if restore.logs %}
+    <div class="run-logs">
+        <h3>Logs</h3>
+        <pre class="log-output">{{ restore.logs }}</pre>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

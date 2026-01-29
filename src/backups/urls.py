@@ -18,4 +18,20 @@ urlpatterns = [
         views.backup_status,
         name="backup_status",
     ),
+    # Restore endpoints
+    path(
+        "runs/<int:run_id>/restore/",
+        views.trigger_restore,
+        name="trigger_restore",
+    ),
+    path(
+        "restores/<int:restore_id>/",
+        views.restore_detail,
+        name="restore_detail",
+    ),
+    path(
+        "restores/<int:restore_id>/status/",
+        views.restore_status,
+        name="restore_status",
+    ),
 ]

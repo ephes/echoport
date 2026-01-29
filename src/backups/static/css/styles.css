@@ -424,3 +424,115 @@ dd ul {
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
 }
+
+/* Restore Section */
+.restore-section {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.restore-section h3 {
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.restore-warning {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid var(--color-warning);
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    color: var(--color-text);
+    font-size: 0.875rem;
+}
+
+.restore-warning code {
+    background: rgba(245, 158, 11, 0.2);
+    padding: 0.125rem 0.375rem;
+    border-radius: 4px;
+}
+
+.restore-blocked {
+    color: var(--color-text-muted);
+    font-style: italic;
+}
+
+.restore-blocked a {
+    color: var(--color-primary);
+}
+
+/* Danger Button */
+.btn-danger {
+    background: var(--color-error);
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #dc2626;
+}
+
+/* Secondary Button */
+.btn-secondary {
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+}
+
+.btn-secondary:hover {
+    background: var(--color-border);
+}
+
+/* Confirm Dialog */
+.confirm-dialog {
+    border: none;
+    border-radius: var(--radius);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    padding: 1.5rem;
+    max-width: 450px;
+}
+
+.confirm-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.confirm-dialog h4 {
+    margin-bottom: 1rem;
+    font-size: 1.125rem;
+}
+
+.confirm-dialog p {
+    margin-bottom: 0.75rem;
+    color: var(--color-text);
+}
+
+.confirm-dialog ul {
+    margin-bottom: 1rem;
+    padding-left: 1.5rem;
+    color: var(--color-text-muted);
+    font-size: 0.875rem;
+}
+
+.confirm-dialog ul li {
+    margin-bottom: 0.25rem;
+}
+
+.confirm-dialog code {
+    background: var(--color-bg);
+    padding: 0.125rem 0.375rem;
+    border-radius: 4px;
+    font-size: 0.8125rem;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--color-border);
+}
