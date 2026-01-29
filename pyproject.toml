@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28.0",
     "granian>=0.8.0",
     "whitenoise",
+    "croniter>=2.0",
 ]
 
 [build-system]
@@ -33,6 +34,7 @@ dev = [
     "pytest-django",
     "pytest-asyncio",
     "django-stubs[compatible-mypy]",
+    "types-croniter",
 ]
 
 [tool.uv]

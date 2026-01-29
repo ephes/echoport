@@ -15,11 +15,18 @@ import environ
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# Load env file
+# Site root is two levels up from BASE_DIR (src/django -> src -> site root)
+SITE_ROOT = BASE_DIR.parent.parent
+
+# Load env file - check site root first (production), then BASE_DIR (local dev)
 env = environ.Env(
     DEBUG=(bool, False)
 )
-environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
+env_file = SITE_ROOT / ".env"
+if not env_file.exists():
+    env_file = BASE_DIR / ".env"
+if env_file.exists():
+    environ.Env.read_env(str(env_file))
 
 ALLOWED_HOSTS: list[str] = []
 
@@ -135,6 +142,9 @@ filterwarnings(
     "ignore", "The FORMS_URLFIELD_ASSUME_HTTPS transitional setting is deprecated."
 )
 FORMS_URLFIELD_ASSUME_HTTPS = True
+
+# Echoport paths
+ECHOPORT_CACHE_DIR = env("ECHOPORT_CACHE_DIR", default="")  # For scheduler lock file
 
 # FastDeploy integration settings
 FASTDEPLOY_BASE_URL = env("FASTDEPLOY_BASE_URL", default="http://localhost:8000")

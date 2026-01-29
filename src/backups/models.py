@@ -108,6 +108,10 @@ class BackupTarget(models.Model):
         """Get the most recent backup run for this target."""
         return self.runs.order_by("-started_at").first()
 
+    def get_last_scheduled_run(self):
+        """Get the most recent scheduled backup run for this target (any status)."""
+        return self.runs.filter(trigger=BackupTrigger.SCHEDULED).order_by("-started_at").first()
+
 
 class BackupRun(models.Model):
     """

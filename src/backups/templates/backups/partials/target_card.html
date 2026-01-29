@@ -1,3 +1,4 @@
+{% load backup_tags %}
 <div class="target-card{% if target.active_run %} running{% endif %}"
      id="target-{{ target.id }}"
      {% if target.active_run %}
@@ -50,6 +51,10 @@
         <div class="schedule">
             <span class="label">Schedule:</span>
             <code>{{ target.schedule }}</code>
+            {% next_scheduled_run target as next_run %}
+            {% if next_run %}
+            <span class="next-run">(next: {{ next_run|date:"M j, H:i" }})</span>
+            {% endif %}
         </div>
         {% endif %}
     </div>

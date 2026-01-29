@@ -55,3 +55,7 @@ htmlcov/
 
 # macOS
 .DS_Store
+
+# Scheduler lock file (normally in /tmp, but just in case)
+.scheduler.lock
+*-scheduler.lock
