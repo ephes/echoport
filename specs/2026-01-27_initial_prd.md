@@ -2,7 +2,7 @@
 
 **Status**: v1.6 (Health Endpoint)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-29 (Phase 4 progress: file_count UI, health endpoint)
+**Last Updated**: 2026-01-30 (Phase 4 progress: file_count UI, health endpoint)
 
 ---
 
@@ -582,17 +582,23 @@ All restore steps captured by FastDeploy:
 
 ## Changelog
 
-### v1.6 (2026-01-29)
+### v1.6 (2026-01-30)
 - Phase 4 progress: UI improvements and monitoring endpoint
 - Show `file_count` in run detail UI (backup result section)
 - New health/status JSON endpoint at `/api/health/`
   - Public endpoint (no auth) for NyxMon integration
   - Returns overall status: healthy, degraded, or unhealthy
-  - Per-target status with overdue detection based on cron schedule
+  - Per-target status: ok, overdue, last_failed, invalid_schedule
+  - Overdue detection based on cron schedule
   - Recent failures list (last 7 days, max 10 entries)
   - NyxMon can alert on `status != "healthy"` or `overdue == true`
+- Security hardening after code review:
+  - Removed error_message from response (may contain paths/tokens)
+  - TIMEOUT treated as failure (was only checking FAILED)
+  - Timezone-aware ISO timestamps for next_scheduled
+  - Invalid cron expressions surface as `invalid_schedule` status
 - Removed email notification from roadmap (using NyxMon instead)
-- 10 new tests for health endpoint
+- 14 tests for health endpoint
 
 ### v1.5 (2026-01-29)
 - Restore functionality tested and working end-to-end
