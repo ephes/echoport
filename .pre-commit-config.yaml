@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-lint
+        name: ruff (uvx)
+        entry: uvx ruff check
+        language: system
+        types: [python]

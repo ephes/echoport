@@ -48,6 +48,10 @@ shell:
 typecheck:
     uv run mypy src/
 
+# Run linting
+lint:
+    uvx ruff check .
+
 # Sync dependencies
 sync:
     uv sync
