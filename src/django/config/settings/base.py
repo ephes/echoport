@@ -5,7 +5,6 @@ For more information on this file, see
 https://docs.djangoproject.com/en/5.2/topics/settings/
 """
 
-import os
 from pathlib import Path
 from typing import Any
 from warnings import filterwarnings
