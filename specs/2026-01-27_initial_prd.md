@@ -1,8 +1,8 @@
 # Echoport - Backup Service PRD
 
-**Status**: v1.6 (Health Endpoint)
+**Status**: v1.7 (Retention Cleanup)
 **Date**: 2026-01-27
-**Last Updated**: 2026-01-30 (Phase 4 progress: file_count UI, health endpoint)
+**Last Updated**: 2026-01-30 (Phase 4 complete: retention policy enforcement)
 
 ---
 
@@ -401,14 +401,30 @@ class RestoreRun(models.Model):
 - [x] Templates: `restore_detail.html`, `partials/restore_status.html`
 - [x] CSS: restore section, danger button, confirmation dialog styles
 
-### Phase 4: Polish
+### Phase 4: Polish ✅ COMPLETE
 
 **echoport:**
-- [ ] Retention policy enforcement (cleanup old backups from MinIO)
+- [x] Retention policy enforcement (cleanup old backups from MinIO)
+  - New management command: `cleanup_old_backups`
+  - `--dry-run` flag for safe testing (validates storage info, shows "would error")
+  - `--target <name>` to cleanup specific target only
+  - File locking prevents concurrent runs
+  - Deletes from MinIO first, then database (orphaned DB records safer than orphaned files)
+  - Skips backups with RestoreRuns (PROTECT FK)
+  - Only deletes SUCCESS status backups
+  - Serializes with backup/restore via `select_for_update` on BackupTarget
+  - New `minio_client.py` module with idempotent NoSuchKey handling
+  - 34 tests for retention logic
 - [x] Show file_count in run detail UI
 - [x] Health/status JSON endpoint for NyxMon monitoring (`/api/health/`)
 - [x] Add homelab as backup target (done in v1.2)
 - [x] Add echoport self-backup target (done in v1.2)
+
+**ops-library:**
+- [x] Cleanup cron job in `echoport_deploy` role
+  - Runs daily at 3am (after 2am backups)
+  - Configurable via `echoport_cleanup_enabled` and `echoport_cleanup_hour`
+  - Logs to `/home/echoport/logs/cleanup.log`
 
 ### Phase 5: ops-library Integration (Future)
 
@@ -581,6 +597,32 @@ All restore steps captured by FastDeploy:
 ---
 
 ## Changelog
+
+### v1.7 (2026-01-30)
+- Phase 4 complete: retention policy enforcement
+- New management command: `cleanup_old_backups`
+  - Deletes backups older than `retention_days` per target (default 30)
+  - `--dry-run` flag for safe testing (validates storage info, shows "would error")
+  - `--target <name>` option to cleanup specific target
+  - File locking prevents concurrent runs
+  - Deletes from MinIO first, then database
+  - Skips backups with RestoreRuns (PROTECT FK)
+  - Only deletes SUCCESS status backups
+  - Serializes with backup/restore via `select_for_update` on BackupTarget
+  - SQLite fallback for databases without row-level locking
+  - DeleteResult enum (DELETED/SKIPPED/ERROR) for accurate counting
+- New module: `minio_client.py`
+  - Thin wrapper around `mc` CLI
+  - `delete_object()` and `object_exists()` functions
+  - Uses `mc --json` for structured error parsing
+  - Idempotent: NoSuchKey errors treated as success (handles partial failures)
+  - Checks both stdout and stderr for JSON output
+  - Uses `MINIO_MC_PATH` and `MINIO_ALIAS` settings
+- ops-library: cleanup cron job in `echoport_deploy` role
+  - Runs daily at 3am (configurable via `echoport_cleanup_hour`)
+  - Logs to `/home/echoport/logs/cleanup.log`
+  - Toggled via `echoport_cleanup_enabled` (default true)
+- 34 tests for retention logic, minio client, and command behavior
 
 ### v1.6 (2026-01-30)
 - Phase 4 progress: UI improvements and monitoring endpoint

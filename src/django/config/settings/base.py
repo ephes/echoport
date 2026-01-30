@@ -145,6 +145,10 @@ FORMS_URLFIELD_ASSUME_HTTPS = True
 # Echoport paths
 ECHOPORT_CACHE_DIR = env("ECHOPORT_CACHE_DIR", default="")  # For scheduler lock file
 
+# MinIO settings (for retention cleanup)
+MINIO_MC_PATH = env("MINIO_MC_PATH", default="/usr/local/bin/mc")
+MINIO_ALIAS = env("MINIO_ALIAS", default="minio")
+
 # FastDeploy integration settings
 FASTDEPLOY_BASE_URL = env("FASTDEPLOY_BASE_URL", default="http://localhost:8000")
 FASTDEPLOY_SERVICE_TOKEN = env("FASTDEPLOY_SERVICE_TOKEN", default="")
