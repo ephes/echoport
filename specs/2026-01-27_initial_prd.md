@@ -600,6 +600,7 @@ All restore steps captured by FastDeploy:
 
 ### v1.7 (2026-01-30)
 - Phase 4 complete: retention policy enforcement
+- Deployed and verified on production (dry-run tested against 3 targets)
 - New management command: `cleanup_old_backups`
   - Deletes backups older than `retention_days` per target (default 30)
   - `--dry-run` flag for safe testing (validates storage info, shows "would error")
