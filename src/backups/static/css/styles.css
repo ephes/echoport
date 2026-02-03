@@ -494,6 +494,7 @@ dd ul {
     margin: auto;
     border: none;
     border-radius: var(--radius);
+    background: var(--color-surface);
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
     padding: 1.5rem;
     max-width: 450px; /* tune if dialogs vary in width */
@@ -508,6 +509,7 @@ dd ul {
 .confirm-dialog h4 {
     margin-bottom: 1rem;
     font-size: 1.125rem;
+    color: var(--color-text);
 }
 
 .confirm-dialog p {
