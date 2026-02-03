@@ -1,0 +1,132 @@
+# Echoport
+
+## Overview
+
+Backup orchestration service for homelab deployments. Manages SQLite backups via FastDeploy integration and stores artifacts in MinIO.
+
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/your-repo/echoport.git
+cd echoport
+uv sync
+
+# Configure environment
+cp .env.example .env
+chmod 600 .env
+# Edit .env with your settings
+
+# Initialize database
+just migrate
+just devdata  # optional: creates test targets
+
+# Run development server
+just dev
+```
+
+## Architecture
+
+```
+User (Dashboard/Cron)
+        │
+        ▼
+┌───────────────┐
+│   Echoport    │ ← Orchestration layer
+│   (Django)    │
+└───────┬───────┘
+        │ HTTP API
+        ▼
+┌───────────────┐
+│  FastDeploy   │ ← Execution layer (runs on macmini)
+└───────┬───────┘
+        │
+   ┌────┴────┐
+   ▼         ▼
+backup.py   MinIO
+   │
+   ▼
+Services (NyxMon, etc.)
+```
+
+Echoport triggers backups via FastDeploy's deployment API. The `backup.py` script runs locally on the server, performs safe SQLite backups, and uploads artifacts to MinIO. See [PRD](specs/2026-01-27_initial_prd.md) for detailed architecture.
+
+## Safe Usage
+
+- **SQLite backups are safe**: Echoport uses `sqlite3 .backup` which handles live databases correctly. Prefer low-traffic windows for large databases.
+- **Restore stops services**: Restore operations stop the target service before overwriting files.
+- **Checksum verification**: Backups include SHA256 checksums. Restore verifies checksum before applying.
+- **Verify backup contents**: `tar -tzf <backup>.tar.gz` to list files.
+- **Secrets not backed up**: `.env` files are excluded. Regenerate via `just deploy-one <service>` from ops-control.
+
+## Secrets & Environment
+
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `DJANGO_SECRET_KEY` | Django secret key |
+| `FASTDEPLOY_BASE_URL` | FastDeploy API URL |
+| `FASTDEPLOY_SERVICE_TOKEN` | Token for FastDeploy auth |
+
+### Optional
+
+| Variable | Description |
+|----------|-------------|
+| `ECHOPORT_CACHE_DIR` | Lock file location (default: system temp) |
+
+### MinIO Configuration
+
+MinIO credentials are configured via `mc alias` on the server, not in Echoport's `.env`:
+
+```bash
+mc alias set myminio https://minio.example.com ACCESS_KEY SECRET_KEY
+```
+
+### Security
+
+```bash
+chmod 600 .env  # Restrict .env permissions
+```
+
+## Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `backup <target>` | Run manual backup for a target |
+| `run_scheduled_backups` | Check and run due scheduled backups (cron) |
+| `cleanup_old_backups` | Delete backups older than retention_days |
+| `create_devdata` | Create development backup targets |
+| `ensure_superuser` | Create/update admin user (deployment) |
+
+Run via: `cd src/django && uv run python manage.py <command>`
+
+Or use Justfile shortcuts: `just backup <target>`, `just devdata`
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| **Backup stuck in PENDING** | Check FastDeploy logs, verify `FASTDEPLOY_SERVICE_TOKEN` |
+| **MinIO upload failed** | Check `mc alias` configuration and bucket permissions |
+| **Restore blocked** | Restore requires valid checksum. Re-run backup if checksum missing |
+| **Scheduled backups not running** | Check cron/service logs at `/home/echoport/logs/scheduler.log` |
+| **Permission denied** | Verify backup script is root-owned, check sudoers config |
+
+## Limitations
+
+- SQLite only (no PostgreSQL support)
+- Single-host deployment (macmini)
+- No client-side encryption (relies on MinIO server security)
+- Single admin user (no multi-user access control)
+
+## Deployment
+
+Echoport is deployed via the `echoport_deploy` role in [ops-library](https://github.com/your-repo/ops-library).
+
+```bash
+# From ops-control
+just deploy-one echoport
+```
+
+See [PRD](specs/2026-01-27_initial_prd.md) for deployment architecture details.
