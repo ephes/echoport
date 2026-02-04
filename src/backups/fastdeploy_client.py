@@ -34,6 +34,58 @@ class DeploymentNotFoundError(FastDeployError):
     pass
 
 
+class EndpointConfigError(FastDeployError):
+    """FastDeploy endpoint configuration error."""
+
+    pass
+
+
+def get_fastdeploy_config(endpoint_key: str | None = None) -> dict[str, str | None]:
+    """
+    Get FastDeploy endpoint configuration for the given key.
+
+    Args:
+        endpoint_key: Key to look up in FASTDEPLOY_ENDPOINTS setting.
+                      If None or empty, returns default config.
+
+    Returns:
+        Dict with 'base_url' and 'token' keys.
+        Values may be None to use FastDeployClient defaults.
+
+    Raises:
+        EndpointConfigError: If endpoint_key is set but not found or incomplete.
+    """
+    if endpoint_key:
+        endpoints = getattr(settings, "FASTDEPLOY_ENDPOINTS", {})
+        if endpoint_key not in endpoints:
+            raise EndpointConfigError(
+                f"FastDeploy endpoint key '{endpoint_key}' not found in settings. "
+                f"Available endpoints: {list(endpoints.keys()) or '(none)'}. "
+                "Configure FASTDEPLOY_ENDPOINTS or remove the endpoint key from the target."
+            )
+
+        endpoint = endpoints[endpoint_key]
+        base_url = endpoint.get("base_url")
+        token = endpoint.get("token")
+
+        if not base_url or not token:
+            missing = []
+            if not base_url:
+                missing.append("base_url")
+            if not token:
+                missing.append("token")
+            raise EndpointConfigError(
+                f"FastDeploy endpoint '{endpoint_key}' is incomplete: "
+                f"missing {', '.join(missing)}. "
+                "Check FASTDEPLOY_ENDPOINTS configuration."
+            )
+
+        return {"base_url": base_url, "token": token}
+
+    # Return empty config to use FastDeployClient defaults
+    return {"base_url": None, "token": None}
+
+
 @dataclass
 class DeploymentStatus:
     """Status of a FastDeploy deployment."""

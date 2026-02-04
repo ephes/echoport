@@ -19,6 +19,7 @@ from .fastdeploy_client import (
     DeploymentStartError,
     FastDeployClient,
     FastDeployError,
+    get_fastdeploy_config,
 )
 from .models import (
     BackupRun,
@@ -189,8 +190,14 @@ def start_restore(
         # Build context for FastDeploy
         context = _build_restore_context(backup_run, run)
 
+        # Get FastDeploy endpoint config for this target
+        fd_config = get_fastdeploy_config(target.fastdeploy_endpoint_key)
+
         # Start the deployment using sync client
-        with FastDeployClient() as client:
+        with FastDeployClient(
+            base_url=fd_config.get("base_url"),
+            service_token=fd_config.get("token"),
+        ) as client:
             try:
                 deployment_id = client.start_deployment(
                     target.fastdeploy_service,
@@ -253,7 +260,7 @@ def _build_restore_context(backup_run: BackupRun, run: RestoreRun) -> dict:
     """Build the context dictionary to pass to FastDeploy for restore."""
     target = backup_run.target
 
-    return {
+    context = {
         "ECHOPORT_ACTION": "restore",
         "ECHOPORT_TARGET": target.name,
         "ECHOPORT_RESTORE_ID": str(run.id),
@@ -264,6 +271,12 @@ def _build_restore_context(backup_run: BackupRun, run: RestoreRun) -> dict:
         "ECHOPORT_CHECKSUM": backup_run.checksum_sha256,
         "ECHOPORT_SERVICE_NAME": target.service_name,
     }
+
+    # Add restore_owner if configured (for automatic chown after restore)
+    if target.restore_owner:
+        context["ECHOPORT_RESTORE_OWNER"] = target.restore_owner
+
+    return context
 
 
 def _handle_deployment_finished(

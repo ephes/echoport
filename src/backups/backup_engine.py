@@ -20,6 +20,7 @@ from .fastdeploy_client import (
     DeploymentStartError,
     FastDeployClient,
     FastDeployError,
+    get_fastdeploy_config,
 )
 from .models import BackupRun, BackupRunStatus, BackupTarget, BackupTrigger
 
@@ -160,8 +161,14 @@ def start_backup(
         # Build context for FastDeploy
         context = _build_backup_context(target, run)
 
+        # Get FastDeploy endpoint config for this target
+        fd_config = get_fastdeploy_config(target.fastdeploy_endpoint_key)
+
         # Start the deployment using sync client
-        with FastDeployClient() as client:
+        with FastDeployClient(
+            base_url=fd_config.get("base_url"),
+            service_token=fd_config.get("token"),
+        ) as client:
             try:
                 deployment_id = client.start_deployment(
                     target.fastdeploy_service,
