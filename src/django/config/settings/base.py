@@ -145,15 +145,39 @@ FORMS_URLFIELD_ASSUME_HTTPS = True
 # Echoport paths
 ECHOPORT_CACHE_DIR = env("ECHOPORT_CACHE_DIR", default="")  # For scheduler lock file
 
+# Path allowlist for backup targets
+# Only paths under these prefixes can be configured for backup
+# Configurable to support different deployment layouts
+ECHOPORT_ALLOWED_PATH_PREFIXES = env.list(
+    "ECHOPORT_ALLOWED_PATH_PREFIXES",
+    default=["/home/", "/opt/", "/var/lib/"]
+)
+
 # MinIO settings (for retention cleanup)
 MINIO_MC_PATH = env("MINIO_MC_PATH", default="/usr/local/bin/mc")
 MINIO_ALIAS = env("MINIO_ALIAS", default="minio")
 
 # FastDeploy integration settings
+# Default endpoint (used when target has no fastdeploy_endpoint_key)
 FASTDEPLOY_BASE_URL = env("FASTDEPLOY_BASE_URL", default="http://localhost:8000")
 FASTDEPLOY_SERVICE_TOKEN = env("FASTDEPLOY_SERVICE_TOKEN", default="")
 FASTDEPLOY_POLL_INTERVAL = 5  # seconds
 FASTDEPLOY_DEFAULT_TIMEOUT = 600  # seconds (10 minutes)
+
+# Per-target FastDeploy endpoints (keyed by endpoint name)
+# Maps endpoint_key -> {"base_url": "...", "token": "..."}
+# Tokens should be loaded from env vars (SOPS-backed in production).
+# Example: FASTDEPLOY_ENDPOINTS = {"staging": {"base_url": "...", "token": "..."}}
+FASTDEPLOY_ENDPOINTS: dict[str, dict[str, str]] = {}
+
+# Load staging endpoint if configured
+_staging_url = env("FASTDEPLOY_STAGING_BASE_URL", default="")
+_staging_token = env("FASTDEPLOY_STAGING_SERVICE_TOKEN", default="")
+if _staging_url and _staging_token:
+    FASTDEPLOY_ENDPOINTS["staging"] = {
+        "base_url": _staging_url,
+        "token": _staging_token,
+    }
 
 # Logging configuration
 LOGGING = {

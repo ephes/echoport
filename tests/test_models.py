@@ -1,4 +1,5 @@
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
 from backups.models import BackupRun, BackupRunStatus, BackupTarget
@@ -17,10 +18,13 @@ class TestBackupTarget:
         assert target.status == "active"
 
     def test_unique_name(self, backup_target):
-        with pytest.raises(IntegrityError):
+        # Since save() now calls full_clean(), the unique constraint is caught
+        # at validation time (ValidationError) before reaching the database
+        with pytest.raises((ValidationError, IntegrityError)):
             BackupTarget.objects.create(
                 name=backup_target.name,
                 fastdeploy_service="echoport-backup",
+                db_path="/tmp/other.db",
             )
 
 

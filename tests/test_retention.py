@@ -141,12 +141,14 @@ class TestGetBackupsToDelete:
         target_short = BackupTarget.objects.create(
             name="short-retention",
             fastdeploy_service="echoport-backup",
+            db_path="/tmp/short.db",
             retention_days=3,
             status=BackupStatus.ACTIVE,
         )
         target_long = BackupTarget.objects.create(
             name="long-retention",
             fastdeploy_service="echoport-backup",
+            db_path="/tmp/long.db",
             retention_days=30,
             status=BackupStatus.ACTIVE,
         )
@@ -249,6 +251,7 @@ class TestCleanupCommand:
         other_target = BackupTarget.objects.create(
             name="other-target",
             fastdeploy_service="echoport-backup",
+            db_path="/tmp/other.db",
             retention_days=7,
             status=BackupStatus.ACTIVE,
         )
@@ -286,6 +289,7 @@ class TestCleanupCommand:
         paused_target = BackupTarget.objects.create(
             name="paused-target",
             fastdeploy_service="echoport-backup",
+            db_path="/tmp/paused.db",
             retention_days=7,
             status=BackupStatus.PAUSED,
         )

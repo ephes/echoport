@@ -21,3 +21,6 @@ PASSWORD_HASHERS = [
 # Use a test FastDeploy URL
 FASTDEPLOY_BASE_URL = "http://testserver:8000"
 FASTDEPLOY_SERVICE_TOKEN = "test-token"
+
+# Allow /tmp/ paths in tests
+ECHOPORT_ALLOWED_PATH_PREFIXES = ["/home/", "/opt/", "/var/lib/", "/tmp/"]

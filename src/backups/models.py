@@ -48,10 +48,24 @@ class BackupTarget(models.Model):
         max_length=100,
         help_text="Name of the FastDeploy service to use for backups",
     )
+    fastdeploy_endpoint_key = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Key to select FastDeploy endpoint from settings (e.g., 'staging'). "
+                  "If blank, uses default FASTDEPLOY_BASE_URL/TOKEN.",
+    )
     service_name = models.CharField(
         max_length=100,
         blank=True,
         help_text="Systemd service to stop during restore (e.g., 'nyxmon.service')",
+    )
+    restore_owner = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="User:group to chown restored files (e.g., 'marina:marina'). "
+                  "If blank, ownership is not changed after restore.",
     )
 
     # Backup source configuration - passed to FastDeploy as context
@@ -104,6 +118,67 @@ class BackupTarget(models.Model):
 
     def __str__(self):
         return self.name
+
+    def clean(self):
+        """
+        Model-level validation, called by full_clean().
+
+        This duplicates form validation to catch issues from non-admin save paths
+        (management commands, Django shell). Uses centralized validation module.
+
+        Aggregates errors into a dict for proper Django model validation.
+        """
+        from django.core.exceptions import ValidationError
+
+        from .validation import (
+            validate_backup_files,
+            validate_backup_source,
+            validate_endpoint_key,
+            validate_path,
+            validate_schedule,
+        )
+
+        errors = {}
+
+        # Normalize and validate db_path (persists the trimmed value)
+        if self.db_path:
+            result = validate_path(self.db_path)
+            if not result.is_valid:
+                errors["db_path"] = result.error
+            else:
+                self.db_path = result.value
+
+        # Always validate backup_files (catches invalid falsy values like "", 0, {})
+        result = validate_backup_files(self.backup_files)
+        if not result.is_valid:
+            errors["backup_files"] = result.error
+        else:
+            self.backup_files = result.value
+
+        # Validate schedule
+        if self.schedule:
+            result = validate_schedule(self.schedule)
+            if not result.is_valid:
+                errors["schedule"] = result.error
+
+        # Validate fastdeploy_endpoint_key
+        if self.fastdeploy_endpoint_key:
+            result = validate_endpoint_key(self.fastdeploy_endpoint_key)
+            if not result.is_valid:
+                errors["fastdeploy_endpoint_key"] = result.error
+
+        # Require at least one backup source
+        source_error = validate_backup_source(self.db_path, self.backup_files)
+        if source_error:
+            errors["__all__"] = source_error
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        """Override save to enforce validation."""
+        self.full_clean()
+        super().save(*args, **kwargs)
 
     def get_last_successful_run(self):
         """Get the most recent successful backup run for this target."""

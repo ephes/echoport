@@ -3,8 +3,12 @@ Management command to create development/test data.
 
 Usage:
     python manage.py create_devdata
+
+Note: This command is disabled in production (DEBUG=False).
+Use Django admin to manage backup targets in production.
 """
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from backups.models import BackupTarget
@@ -14,6 +18,15 @@ class Command(BaseCommand):
     help = "Create development data including backup targets"
 
     def handle(self, *args, **options):
+        if not settings.DEBUG:
+            self.stderr.write(
+                self.style.ERROR(
+                    "create_devdata is disabled in production. "
+                    "Use Django admin to manage backup targets."
+                )
+            )
+            return
+
         self.stdout.write("Creating development data...")
 
         targets = [

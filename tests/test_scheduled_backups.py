@@ -55,15 +55,24 @@ def paused_target(db):
 
 @pytest.fixture
 def invalid_schedule_target(db):
-    """Create a target with an invalid cron schedule."""
-    return BackupTarget.objects.create(
+    """Create a target with an invalid cron schedule.
+
+    Since model validation now rejects invalid schedules at save(),
+    we create with a valid schedule then use update() to bypass validation.
+    This simulates invalid data that might exist from before validation was added.
+    """
+    target = BackupTarget.objects.create(
         name="invalid-schedule-test",
         description="Target with invalid schedule",
         fastdeploy_service="echoport-backup",
         db_path="/tmp/test.db",
-        schedule="not a valid cron expression",
+        schedule="0 2 * * *",  # Valid schedule for initial creation
         status=BackupStatus.ACTIVE,
     )
+    # Bypass model validation to set invalid schedule
+    BackupTarget.objects.filter(pk=target.pk).update(schedule="not a valid cron expression")
+    target.refresh_from_db()
+    return target
 
 
 class TestIsDueForBackup:
