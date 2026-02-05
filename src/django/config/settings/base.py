@@ -165,10 +165,26 @@ FASTDEPLOY_POLL_INTERVAL = 5  # seconds
 FASTDEPLOY_DEFAULT_TIMEOUT = 600  # seconds (10 minutes)
 
 # Per-target FastDeploy endpoints (keyed by endpoint name)
-# Maps endpoint_key -> {"base_url": "...", "token": "..."}
+# Maps endpoint_key -> {"base_url": "...", "token": "...", "service_tokens": {...}}
 # Tokens should be loaded from env vars (SOPS-backed in production).
-# Example: FASTDEPLOY_ENDPOINTS = {"staging": {"base_url": "...", "token": "..."}}
-FASTDEPLOY_ENDPOINTS: dict[str, dict[str, str]] = {}
+#
+# Configuration options:
+# - base_url: FastDeploy base URL for this endpoint
+# - token: Default fallback token (used when service not in service_tokens)
+# - service_tokens: Per-service tokens for different BackupTarget.fastdeploy_service values
+#
+# Example:
+#   FASTDEPLOY_ENDPOINTS = {
+#       "staging": {
+#           "base_url": "https://deploy.staging.example.com",
+#           "token": "default-fallback-token",  # Optional fallback
+#           "service_tokens": {
+#               "marina-staging-backup": "token-for-marina-backup",
+#               "nyxmon-staging-backup": "token-for-nyxmon-backup",
+#           }
+#       }
+#   }
+FASTDEPLOY_ENDPOINTS: dict[str, dict[str, str | dict[str, str]]] = {}
 
 # Load staging endpoint if configured
 _staging_url = env("FASTDEPLOY_STAGING_BASE_URL", default="")

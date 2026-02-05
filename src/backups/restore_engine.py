@@ -17,6 +17,7 @@ from django.utils import timezone
 from .fastdeploy_client import (
     DeploymentNotFoundError,
     DeploymentStartError,
+    EndpointConfigError,
     FastDeployClient,
     FastDeployError,
     get_fastdeploy_config,
@@ -191,7 +192,11 @@ def start_restore(
         context = _build_restore_context(backup_run, run)
 
         # Get FastDeploy endpoint config for this target
-        fd_config = get_fastdeploy_config(target.fastdeploy_endpoint_key)
+        # Pass service_name to select the correct service-specific token
+        fd_config = get_fastdeploy_config(
+            target.fastdeploy_endpoint_key,
+            target.fastdeploy_service,
+        )
 
         # Start the deployment using sync client
         with FastDeployClient(
@@ -247,6 +252,10 @@ def start_restore(
 
     except (RestoreError, RestoreTimeoutError):
         raise
+    except EndpointConfigError as e:
+        logger.error(f"FastDeploy configuration error: {e}")
+        _mark_run_failed(run, str(e))
+        raise RestoreError(f"FastDeploy configuration error: {e}") from e
     except Exception as e:
         logger.exception(f"Unexpected error during restore: {e}")
         _mark_run_failed(run, str(e))

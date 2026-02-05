@@ -101,3 +101,159 @@ class TestGetFastdeployConfig:
 
         assert "staging" in str(exc_info.value)
         assert "(none)" in str(exc_info.value)
+
+
+class TestServiceTokens:
+    """Tests for per-service token selection."""
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_service_token_used_when_available(self, mock_settings):
+        """Service-specific token is used when configured."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "default-token",
+                "service_tokens": {
+                    "marina-backup": "marina-backup-token",
+                    "marina-restore": "marina-restore-token",
+                },
+            }
+        }
+
+        config = get_fastdeploy_config("staging", "marina-backup")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "marina-backup-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_default_token_used_when_service_not_in_service_tokens(self, mock_settings):
+        """Default token is used when service is not in service_tokens."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "default-token",
+                "service_tokens": {
+                    "other-service": "other-token",
+                },
+            }
+        }
+
+        config = get_fastdeploy_config("staging", "marina-backup")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "default-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_default_token_used_when_no_service_tokens_configured(self, mock_settings):
+        """Default token is used when service_tokens is not configured."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "default-token",
+            }
+        }
+
+        config = get_fastdeploy_config("staging", "marina-backup")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "default-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_default_token_used_when_service_name_is_none(self, mock_settings):
+        """Default token is used when service_name is None."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "default-token",
+                "service_tokens": {
+                    "marina-backup": "marina-backup-token",
+                },
+            }
+        }
+
+        config = get_fastdeploy_config("staging", None)
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "default-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_error_when_no_default_and_service_not_found(self, mock_settings):
+        """Error is raised when no default token and service not in service_tokens."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "service_tokens": {
+                    "other-service": "other-token",
+                },
+            }
+        }
+
+        with pytest.raises(EndpointConfigError) as exc_info:
+            get_fastdeploy_config("staging", "marina-backup")
+
+        assert "incomplete" in str(exc_info.value)
+        assert "token" in str(exc_info.value)
+        assert "marina-backup" in str(exc_info.value)
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_service_tokens_only_config_works(self, mock_settings):
+        """Endpoint with only service_tokens (no default) works for known services."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "service_tokens": {
+                    "marina-backup": "marina-backup-token",
+                },
+            }
+        }
+
+        config = get_fastdeploy_config("staging", "marina-backup")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "marina-backup-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_service_tokens_null_falls_back_to_default(self, mock_settings):
+        """service_tokens: null (from YAML) falls back to default token."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "default-token",
+                "service_tokens": None,  # Explicit null from YAML
+            }
+        }
+
+        config = get_fastdeploy_config("staging", "marina-backup")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "default-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_service_tokens_invalid_type_raises_error(self, mock_settings):
+        """service_tokens with invalid type raises EndpointConfigError."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "default-token",
+                "service_tokens": "not-a-dict",  # Invalid type
+            }
+        }
+
+        with pytest.raises(EndpointConfigError) as exc_info:
+            get_fastdeploy_config("staging", "marina-backup")
+
+        assert "invalid service_tokens" in str(exc_info.value)
+        assert "expected dict" in str(exc_info.value)
+        assert "str" in str(exc_info.value)

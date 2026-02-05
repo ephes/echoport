@@ -40,13 +40,19 @@ class EndpointConfigError(FastDeployError):
     pass
 
 
-def get_fastdeploy_config(endpoint_key: str | None = None) -> dict[str, str | None]:
+def get_fastdeploy_config(
+    endpoint_key: str | None = None,
+    service_name: str | None = None,
+) -> dict[str, str | None]:
     """
-    Get FastDeploy endpoint configuration for the given key.
+    Get FastDeploy endpoint configuration for the given key and service.
 
     Args:
         endpoint_key: Key to look up in FASTDEPLOY_ENDPOINTS setting.
                       If None or empty, returns default config.
+        service_name: FastDeploy service name to look up in service_tokens.
+                      If provided and a matching token exists, it overrides
+                      the default endpoint token.
 
     Returns:
         Dict with 'base_url' and 'token' keys.
@@ -54,6 +60,17 @@ def get_fastdeploy_config(endpoint_key: str | None = None) -> dict[str, str | No
 
     Raises:
         EndpointConfigError: If endpoint_key is set but not found or incomplete.
+
+    Configuration format:
+        FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://...",
+                "token": "default-token",  # Fallback token
+                "service_tokens": {        # Optional: per-service tokens
+                    "my-backup-service": "service-specific-token",
+                }
+            }
+        }
     """
     if endpoint_key:
         endpoints = getattr(settings, "FASTDEPLOY_ENDPOINTS", {})
@@ -66,14 +83,41 @@ def get_fastdeploy_config(endpoint_key: str | None = None) -> dict[str, str | No
 
         endpoint = endpoints[endpoint_key]
         base_url = endpoint.get("base_url")
-        token = endpoint.get("token")
+
+        # Look up service-specific token first, fall back to default token
+        token = None
+        service_tokens = endpoint.get("service_tokens", {})
+
+        # Validate service_tokens type (could be null from YAML)
+        if service_tokens is None:
+            service_tokens = {}
+        elif not isinstance(service_tokens, dict):
+            raise EndpointConfigError(
+                f"FastDeploy endpoint '{endpoint_key}' has invalid service_tokens: "
+                f"expected dict, got {type(service_tokens).__name__}. "
+                "Check FASTDEPLOY_ENDPOINTS configuration."
+            )
+
+        if service_name and service_name in service_tokens:
+            token = service_tokens[service_name]
+            logger.debug(f"Using service-specific token for '{service_name}'")
+        else:
+            token = endpoint.get("token")
+            if service_name and service_tokens:
+                logger.debug(
+                    f"No service token for '{service_name}', using default token. "
+                    f"Available service tokens: {list(service_tokens.keys())}"
+                )
 
         if not base_url or not token:
             missing = []
             if not base_url:
                 missing.append("base_url")
             if not token:
-                missing.append("token")
+                if service_name:
+                    missing.append(f"token (no default and no service_tokens['{service_name}'])")
+                else:
+                    missing.append("token")
             raise EndpointConfigError(
                 f"FastDeploy endpoint '{endpoint_key}' is incomplete: "
                 f"missing {', '.join(missing)}. "
