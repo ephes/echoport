@@ -1,4 +1,5 @@
-# Keep specs in version control (design decisions are documentation)
+# Specs are local-only design docs, not committed
+specs/
 
 # Python
 __pycache__/
