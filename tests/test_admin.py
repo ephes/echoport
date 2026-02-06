@@ -3,8 +3,10 @@ Tests for the Django admin configuration.
 """
 
 import pytest
+from django import forms
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
+from django.test import override_settings
 
 from backups.admin import BackupTargetAdmin, BackupTargetAdminForm
 from backups.models import BackupTarget
@@ -158,6 +160,59 @@ class TestBackupTargetAdminForm:
         })
         assert not form.is_valid()
         assert "__all__" in form.errors or "at least one" in str(form.errors).lower()
+
+
+@pytest.mark.django_db
+class TestServiceTokenField:
+    """Tests for service_token field in admin form."""
+
+    def test_service_token_renders_as_password_input(self):
+        """service_token should use PasswordInput widget."""
+        form = BackupTargetAdminForm()
+        widget = form.fields["service_token"].widget
+        assert isinstance(widget, forms.PasswordInput)
+
+    def test_service_token_renders_existing_value(self):
+        """PasswordInput with render_value=True should include existing value."""
+        target = BackupTarget.objects.create(
+            name="test",
+            fastdeploy_service="test-service",
+            db_path="/home/test/db.sqlite3",
+            service_token="my-secret-token",
+        )
+        form = BackupTargetAdminForm(instance=target)
+        html = str(form["service_token"])
+        assert 'type="password"' in html
+        assert "my-secret-token" in html
+
+    def test_has_service_token_display(self, admin_site):
+        """has_service_token should return True when token is set."""
+        admin = BackupTargetAdmin(BackupTarget, admin_site)
+        target = BackupTarget(service_token="some-token")
+        assert admin.has_service_token(target) is True
+
+        target_empty = BackupTarget(service_token="")
+        assert admin.has_service_token(target_empty) is False
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "https://staging.example.com"},
+    })
+    def test_form_accepts_endpoint_without_token_when_service_token_set(self):
+        """Endpoint with no token should be accepted when service_token is provided."""
+        form = BackupTargetAdminForm(data={
+            "name": "test",
+            "fastdeploy_service": "test-service",
+            "fastdeploy_endpoint_key": "staging",
+            "service_token": "my-jwt-token",
+            "db_path": "/home/test/db.sqlite3",
+            "backup_files_text": "",
+            "backup_files": "[]",
+            "status": "active",
+            "retention_days": 30,
+            "timeout_seconds": 600,
+            "storage_bucket": "backups",
+        })
+        assert form.is_valid(), form.errors
 
 
 @pytest.mark.django_db

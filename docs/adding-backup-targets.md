@@ -21,7 +21,8 @@ Read this before entering values to avoid validation errors.
 - All paths must be absolute and under the allowlist `ECHOPORT_ALLOWED_PATH_PREFIXES` (default: `/home/`, `/opt/`, `/var/lib/`). Paths outside the allowlist are rejected.
 - `Backup files` must be a list of paths; in Admin you enter one path per line.
 - `Schedule` must be a valid cron expression; leave blank for no scheduled runs.
-- `FastDeploy endpoint key` must match a key in `FASTDEPLOY_ENDPOINTS`. The endpoint must have `base_url` and either a `token` (default) or a matching entry in `service_tokens`. Leave blank to use the default FastDeploy endpoint.
+- `FastDeploy endpoint key` must match a key in `FASTDEPLOY_ENDPOINTS`. The endpoint must have `base_url` and a resolvable token: either a `token` (default), a matching `service_tokens[fastdeploy_service]` entry, or a `Service token` set on the target. Leave blank to use the default FastDeploy endpoint.
+- `Service token` overrides all other token sources. If set, the endpoint only needs `base_url` (no `token` or `service_tokens` required).
 - Deletion is blocked in Admin. Use `Status = Disabled` to retire a target.
 
 **Field Reference**
@@ -33,6 +34,7 @@ Read this before entering values to avoid validation errors.
 | Status | Choice | No | `Active` | `Active`, `Paused`, `Disabled`. Disabled is the retirement mechanism (deletion blocked). | `Active` |
 | FastDeploy service | Text | Yes | None | FastDeploy service name, max 100 chars | `nyxmon` |
 | FastDeploy endpoint key | Text | No | Blank | Must exist in `FASTDEPLOY_ENDPOINTS` if set; blank uses default endpoint | `staging` |
+| Service token | Text | No | Blank | JWT token for FastDeploy; overrides endpoint/default token if set | (paste JWT) |
 | Service name | Text | No | Blank | Systemd service to stop during restore | `nyxmon.service` |
 | Restore owner | Text | No | Blank | `user:group` to chown restored files | `marina:marina` |
 | Database path | Text | No | Blank | Absolute path under allowlist | `/home/nyxmon/data/db.sqlite3` |
@@ -91,10 +93,15 @@ FASTDEPLOY_ENDPOINTS = {
 }
 ```
 
-Token lookup order:
-1. If `service_tokens[fastdeploy_service]` exists, use that token
-2. Otherwise, fall back to the `token` field
-3. If neither exists, the backup will fail with an endpoint configuration error
+Token lookup order (when `FastDeploy endpoint key` is set):
+1. If `Service token` is set on the target, use that
+2. Else if endpoint has `service_tokens[fastdeploy_service]`, use that
+3. Else use the endpoint's `token` field
+4. If none found, the backup will fail with an endpoint configuration error
+
+Token lookup order (when `FastDeploy endpoint key` is blank — default endpoint):
+1. If `Service token` is set on the target, use that
+2. Else use the `FASTDEPLOY_SERVICE_TOKEN` setting
 
 **Troubleshooting**
 - Error: `At least one of 'Database path' or 'Backup files' must be specified.`

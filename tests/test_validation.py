@@ -326,6 +326,70 @@ class TestValidateEndpointKey:
         assert "incomplete" in result.error.lower()
         assert "token" in result.error
 
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "http://example.com"}
+    })
+    def test_has_token_override_skips_token_requirement(self):
+        """Endpoint with no token is valid when model provides its own token."""
+        result = validate_endpoint_key("staging", has_token_override=True)
+        assert result.is_valid is True
+        assert result.value == "staging"
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "http://example.com", "service_tokens": {"svc": "tok"}}
+    })
+    def test_service_tokens_satisfies_token_requirement_for_matching_service(self):
+        """Endpoint with matching service_tokens entry is valid."""
+        result = validate_endpoint_key("staging", service_name="svc")
+        assert result.is_valid is True
+        assert result.value == "staging"
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "http://example.com", "service_tokens": {"svc": "tok"}}
+    })
+    def test_service_tokens_rejects_unmatched_service(self):
+        """Endpoint rejects when service is not in service_tokens and no default token."""
+        result = validate_endpoint_key("staging", service_name="other-svc")
+        assert result.is_valid is False
+        assert "token" in result.error
+        assert "other-svc" in result.error
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "http://example.com", "service_tokens": {"svc": "tok"}}
+    })
+    def test_service_tokens_without_service_name_rejects(self):
+        """Endpoint with only service_tokens and no service_name rejects (no default token)."""
+        result = validate_endpoint_key("staging")
+        assert result.is_valid is False
+        assert "token" in result.error
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "http://example.com", "service_tokens": {"svc": ""}}
+    })
+    def test_service_tokens_empty_value_rejected(self):
+        """Endpoint with matching service_tokens key but empty value is rejected."""
+        result = validate_endpoint_key("staging", service_name="svc")
+        assert result.is_valid is False
+        assert "token" in result.error
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "http://example.com", "service_tokens": "not-a-dict"}
+    })
+    def test_invalid_service_tokens_type_rejected(self):
+        """Endpoint with non-dict service_tokens is rejected."""
+        result = validate_endpoint_key("staging", service_name="svc")
+        assert result.is_valid is False
+        assert "invalid service_tokens" in result.error.lower()
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": ""}
+    })
+    def test_has_token_override_still_requires_base_url(self):
+        """Even with token override, base_url is still required."""
+        result = validate_endpoint_key("staging", has_token_override=True)
+        assert result.is_valid is False
+        assert "base_url" in result.error
+
 
 class TestValidateBackupSource:
     def test_db_path_only(self):
@@ -414,3 +478,46 @@ class TestModelValidation:
         with pytest.raises(ValidationError) as exc_info:
             target.save()
         assert "backup_files" in exc_info.value.message_dict
+
+    @override_settings(FASTDEPLOY_ENDPOINTS={
+        "staging": {"base_url": "https://staging.example.com"},
+    })
+    def test_service_token_allows_endpoint_without_token_on_save(self):
+        """Model save() should accept endpoint without token when service_token is set."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget(
+            name="test-token-override",
+            fastdeploy_service="test-service",
+            db_path="/home/test/db.sqlite3",
+            fastdeploy_endpoint_key="staging",
+            service_token="my-jwt-token",
+        )
+        target.save()  # Should not raise
+        assert target.pk is not None
+
+    def test_whitespace_service_token_stripped_on_save(self):
+        """Whitespace-only service_token should be stripped to empty."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget(
+            name="test-whitespace-token",
+            fastdeploy_service="test-service",
+            db_path="/home/test/db.sqlite3",
+            service_token="   ",
+        )
+        target.save()
+        assert target.service_token == ""
+
+    def test_service_token_trimmed_on_save(self):
+        """Leading/trailing whitespace in service_token should be trimmed."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget(
+            name="test-trimmed-token",
+            fastdeploy_service="test-service",
+            db_path="/home/test/db.sqlite3",
+            service_token="  my-token  ",
+        )
+        target.save()
+        assert target.service_token == "my-token"

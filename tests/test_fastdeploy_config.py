@@ -257,3 +257,88 @@ class TestServiceTokens:
         assert "invalid service_tokens" in str(exc_info.value)
         assert "expected dict" in str(exc_info.value)
         assert "str" in str(exc_info.value)
+
+
+class TestTokenOverride:
+    """Tests for token_override parameter."""
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_token_override_with_endpoint_key(self, mock_settings):
+        """token_override should override endpoint token."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "endpoint-token",
+            }
+        }
+
+        config = get_fastdeploy_config("staging", token_override="my-override-token")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "my-override-token",
+        }
+
+    def test_token_override_without_endpoint_key(self):
+        """token_override without endpoint_key returns override with None base_url."""
+        config = get_fastdeploy_config(token_override="my-override-token")
+
+        assert config == {
+            "base_url": None,
+            "token": "my-override-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_token_override_with_endpoint_that_has_no_token(self, mock_settings):
+        """token_override should work even if endpoint has no token."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                # No token at all
+            }
+        }
+
+        config = get_fastdeploy_config("staging", token_override="my-override-token")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "my-override-token",
+        }
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_token_override_with_endpoint_missing_base_url_raises(self, mock_settings):
+        """token_override with endpoint missing base_url should still raise."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "token": "endpoint-token",
+                # No base_url
+            }
+        }
+
+        with pytest.raises(EndpointConfigError) as exc_info:
+            get_fastdeploy_config("staging", token_override="my-override-token")
+
+        assert "base_url" in str(exc_info.value)
+
+    @patch("backups.fastdeploy_client.settings")
+    def test_empty_token_override_does_not_override(self, mock_settings):
+        """Empty string token_override should not override."""
+        mock_settings.FASTDEPLOY_ENDPOINTS = {
+            "staging": {
+                "base_url": "https://staging.example.com",
+                "token": "endpoint-token",
+            }
+        }
+
+        config = get_fastdeploy_config("staging", token_override="")
+
+        assert config == {
+            "base_url": "https://staging.example.com",
+            "token": "endpoint-token",
+        }
+
+    def test_empty_token_override_without_endpoint_returns_defaults(self):
+        """Empty token_override without endpoint key returns None defaults."""
+        config = get_fastdeploy_config(token_override="")
+
+        assert config == {"base_url": None, "token": None}

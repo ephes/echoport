@@ -55,6 +55,12 @@ class BackupTarget(models.Model):
         help_text="Key to select FastDeploy endpoint from settings (e.g., 'staging'). "
                   "If blank, uses default FASTDEPLOY_BASE_URL/TOKEN.",
     )
+    service_token = models.TextField(
+        blank=True,
+        default="",
+        help_text="JWT token for FastDeploy service. If set, overrides token from "
+                  "FASTDEPLOY_ENDPOINTS. Leave blank to use endpoint/default token.",
+    )
     service_name = models.CharField(
         max_length=100,
         blank=True,
@@ -140,6 +146,10 @@ class BackupTarget(models.Model):
 
         errors = {}
 
+        # Normalize service_token (strip whitespace)
+        if self.service_token:
+            self.service_token = self.service_token.strip()
+
         # Normalize and validate db_path (persists the trimmed value)
         if self.db_path:
             result = validate_path(self.db_path)
@@ -163,7 +173,11 @@ class BackupTarget(models.Model):
 
         # Validate fastdeploy_endpoint_key
         if self.fastdeploy_endpoint_key:
-            result = validate_endpoint_key(self.fastdeploy_endpoint_key)
+            result = validate_endpoint_key(
+                self.fastdeploy_endpoint_key,
+                has_token_override=bool(self.service_token),
+                service_name=self.fastdeploy_service,
+            )
             if not result.is_valid:
                 errors["fastdeploy_endpoint_key"] = result.error
 

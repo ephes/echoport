@@ -173,9 +173,20 @@ def validate_schedule(schedule: str) -> ValidationResult:
     return ValidationResult(value=schedule)
 
 
-def validate_endpoint_key(endpoint_key: str) -> ValidationResult:
+def validate_endpoint_key(
+    endpoint_key: str,
+    has_token_override: bool = False,
+    service_name: str = "",
+) -> ValidationResult:
     """
     Validate fastdeploy_endpoint_key exists and is complete in settings.
+
+    Args:
+        endpoint_key: The endpoint key to validate.
+        has_token_override: If True, the model provides its own token,
+                            so the endpoint doesn't need one.
+        service_name: FastDeploy service name. When provided, validates that
+                      a token can be resolved for this specific service.
 
     Returns:
         ValidationResult with endpoint_key or error message
@@ -197,8 +208,30 @@ def validate_endpoint_key(endpoint_key: str) -> ValidationResult:
     missing = []
     if not endpoint.get("base_url"):
         missing.append("base_url")
-    if not endpoint.get("token"):
-        missing.append("token")
+    # Token is required unless the model provides its own (has_token_override)
+    if not has_token_override:
+        service_tokens = endpoint.get("service_tokens")
+        # Validate service_tokens type if present
+        if service_tokens is not None and not isinstance(service_tokens, dict):
+            return ValidationResult(
+                error=f"Endpoint '{endpoint_key}' has invalid service_tokens: "
+                      f"expected dict, got {type(service_tokens).__name__}"
+            )
+        # Check if a token can be resolved for this service
+        default_token = endpoint.get("token")
+        if service_tokens and isinstance(service_tokens, dict):
+            has_matching_service_token = bool(
+                service_name and service_tokens.get(service_name)
+            )
+        else:
+            has_matching_service_token = False
+        if not default_token and not has_matching_service_token:
+            if service_name and service_tokens:
+                missing.append(
+                    f"token (no default and no service_tokens['{service_name}'])"
+                )
+            else:
+                missing.append("token")
     if missing:
         return ValidationResult(
             error=f"Endpoint '{endpoint_key}' is incomplete: missing {', '.join(missing)}"

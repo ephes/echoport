@@ -43,6 +43,7 @@ class EndpointConfigError(FastDeployError):
 def get_fastdeploy_config(
     endpoint_key: str | None = None,
     service_name: str | None = None,
+    token_override: str | None = None,
 ) -> dict[str, str | None]:
     """
     Get FastDeploy endpoint configuration for the given key and service.
@@ -53,6 +54,8 @@ def get_fastdeploy_config(
         service_name: FastDeploy service name to look up in service_tokens.
                       If provided and a matching token exists, it overrides
                       the default endpoint token.
+        token_override: If truthy, overrides all other token resolution.
+                        Used by BackupTarget.service_token field.
 
     Returns:
         Dict with 'base_url' and 'token' keys.
@@ -83,6 +86,16 @@ def get_fastdeploy_config(
 
         endpoint = endpoints[endpoint_key]
         base_url = endpoint.get("base_url")
+
+        # If token_override is provided, use it directly
+        if token_override:
+            if not base_url:
+                raise EndpointConfigError(
+                    f"FastDeploy endpoint '{endpoint_key}' is incomplete: "
+                    "missing base_url. "
+                    "Check FASTDEPLOY_ENDPOINTS configuration."
+                )
+            return {"base_url": base_url, "token": token_override}
 
         # Look up service-specific token first, fall back to default token
         token = None
@@ -126,7 +139,10 @@ def get_fastdeploy_config(
 
         return {"base_url": base_url, "token": token}
 
-    # Return empty config to use FastDeployClient defaults
+    # No endpoint key: token_override or defaults
+    if token_override:
+        return {"base_url": None, "token": token_override}
+
     return {"base_url": None, "token": None}
 
 

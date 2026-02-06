@@ -26,6 +26,9 @@ class BackupTargetAdminForm(forms.ModelForm):
     class Meta:
         model = BackupTarget
         fields = "__all__"
+        widgets = {
+            "service_token": forms.PasswordInput(render_value=True),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -87,14 +90,6 @@ class BackupTargetAdminForm(forms.ModelForm):
             raise ValidationError(result.error)  # Plain string for field-level
         return result.value
 
-    def clean_fastdeploy_endpoint_key(self):
-        """Validate endpoint key exists and is complete in settings."""
-        key = self.cleaned_data.get("fastdeploy_endpoint_key", "")
-        result = validate_endpoint_key(key)
-        if not result.is_valid:
-            raise ValidationError(result.error)  # Plain string for field-level
-        return result.value
-
     def clean(self):
         """Cross-field validation."""
         cleaned_data = super().clean()
@@ -106,6 +101,19 @@ class BackupTargetAdminForm(forms.ModelForm):
         if error:
             raise ValidationError(error)
 
+        # Validate endpoint key (done here so all fields are available)
+        key = cleaned_data.get("fastdeploy_endpoint_key", "")
+        if key:
+            has_token_override = bool(cleaned_data.get("service_token", "").strip())
+            service_name = cleaned_data.get("fastdeploy_service", "")
+            result = validate_endpoint_key(
+                key,
+                has_token_override=has_token_override,
+                service_name=service_name,
+            )
+            if not result.is_valid:
+                self.add_error("fastdeploy_endpoint_key", result.error)
+
         # Transfer validated backup_files to the actual field
         cleaned_data["backup_files"] = backup_files
         return cleaned_data
@@ -114,7 +122,7 @@ class BackupTargetAdminForm(forms.ModelForm):
 @admin.register(BackupTarget)
 class BackupTargetAdmin(admin.ModelAdmin):
     form = BackupTargetAdminForm
-    list_display = ["name", "status", "schedule", "fastdeploy_service", "updated_at"]
+    list_display = ["name", "status", "schedule", "fastdeploy_service", "has_service_token", "updated_at"]
     list_filter = ["status"]
     search_fields = ["name", "description"]
     readonly_fields = ["created_at", "updated_at"]
@@ -125,7 +133,7 @@ class BackupTargetAdmin(admin.ModelAdmin):
         }),
         ("FastDeploy Configuration", {
             "fields": ["fastdeploy_service", "fastdeploy_endpoint_key",
-                       "service_name", "restore_owner"],
+                       "service_token", "service_name", "restore_owner"],
             "description": "FastDeploy endpoint key must match a key in FASTDEPLOY_ENDPOINTS setting (leave blank for default).",
         }),
         ("Backup Source", {
@@ -141,6 +149,10 @@ class BackupTargetAdmin(admin.ModelAdmin):
             "classes": ["collapse"],
         }),
     ]
+
+    @admin.display(boolean=True, description="Token")
+    def has_service_token(self, obj):
+        return bool(obj.service_token)
 
     def has_delete_permission(self, request, obj=None):
         # Block deletion to preserve audit history

@@ -196,6 +196,7 @@ def start_restore(
         fd_config = get_fastdeploy_config(
             target.fastdeploy_endpoint_key,
             target.fastdeploy_service,
+            token_override=target.service_token,
         )
 
         # Start the deployment using sync client
