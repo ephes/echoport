@@ -103,6 +103,77 @@ Token lookup order (when `FastDeploy endpoint key` is blank — default endpoint
 1. If `Service token` is set on the target, use that
 2. Else use the `FASTDEPLOY_SERVICE_TOKEN` setting
 
+**Understanding Local vs Remote Backup Targets**
+
+There are two types of backup targets:
+
+1. **Local targets** (e.g., nyxmon, fastdeploy, echoport) - Services running ON macmini
+   - Use the standard `echoport-backup` FastDeploy service
+   - Backup script accesses files directly via filesystem
+   - No SSH required
+
+2. **Remote targets** (e.g., marina-staging) - Services running on OTHER hosts
+   - Require a DEDICATED FastDeploy service (e.g., `marina-staging-backup`)
+   - Backup script runs on macmini but uses SSH/SCP/rsync to access remote files
+   - Remote host has NO backup tools - all logic runs on macmini
+
+**CRITICAL**: For remote targets, you cannot just add a BackupTarget in Django Admin. You must FIRST register a FastDeploy service that knows how to SSH to the remote host. See "Adding a Remote Backup Target" below.
+
+**Adding a Remote Backup Target (Complete Workflow)**
+
+Adding backup/restore for a service on a remote host requires multiple steps:
+
+1. **Create the backup script template** in ops-library:
+   - Template: `ops-library/roles/echoport_backup/templates/<service>_backup.py.j2`
+   - Must handle SSH/SCP/rsync to the remote host
+   - Example: `marina_staging_backup.py.j2`
+
+2. **Create the registration playbook** in ops-control:
+   - Playbook: `ops-control/playbooks/register-<service>-backup.yml`
+   - Must configure:
+     - SSH access (user, known_hosts)
+     - mc (MinIO client) alias for the user running the script
+     - Sudoers if needed
+     - Remote hostname (use FQDN, not short names)
+
+3. **Register the FastDeploy service**:
+   ```bash
+   cd ops-control
+   just register-one <service>-backup
+   ```
+
+4. **Generate a service token** for the new FastDeploy service:
+   - Via FastDeploy admin UI, or
+   - Via API: `POST /api/service-token {"service": "<service>-backup"}`
+   - **CRITICAL**: The token MUST be for the correct service name
+
+5. **Add BackupTarget in Echoport Django Admin**:
+   - Set `FastDeploy service` to the registered service name
+   - Paste the service token into `Service token` field
+   - Configure paths, schedule, etc.
+
+6. **Test the backup** via Echoport UI
+
+**Common Mistakes When Adding Remote Targets**
+
+| Mistake | Symptom | Fix |
+|---------|---------|-----|
+| Using wrong service token | Wrong backup script runs (error message format differs) | Generate token for correct service name |
+| Token pasted in wrong field | "Unknown endpoint key 'eyJhbG...'" | Paste in `Service token`, NOT `FastDeploy endpoint key` |
+| Short hostname instead of FQDN | "Cannot resolve db_path" or SSH fails | Use full hostname (e.g., `staging.wersdoerfer.de` not `staging`) |
+| mc alias not configured | "Insufficient permissions" on MinIO upload | Add mc alias setup to registration playbook |
+| SSH user lacks access | "Cannot resolve db_path" | Use a user with SSH key access (e.g., deploy user) |
+| Missing known_hosts entry | SSH fails with host key error | Add known_hosts setup to registration playbook |
+
+**How to Identify Which Script is Running**
+
+If backup fails, check the error message format to identify which script ran:
+
+- `echoport-backup` (backup.py.j2): Messages say "Configuration loaded for <target-name>"
+- Remote backup scripts: Messages say "Configuration validated" (no target name)
+
+If you see the wrong format, your service token is for the wrong FastDeploy service.
+
 **Troubleshooting**
 - Error: `At least one of 'Database path' or 'Backup files' must be specified.`
 Fix: Provide a `Database path`, `Backup files`, or both.
@@ -111,8 +182,21 @@ Fix: Use absolute paths and ensure they live under `ECHOPORT_ALLOWED_PATH_PREFIX
 - Error: `Invalid cron expression: ...`
 Fix: Use a standard 5-field cron expression (e.g., `0 2 * * *`).
 - Error: `Unknown endpoint key '...'`
-Fix: Use a key configured in `FASTDEPLOY_ENDPOINTS`, or leave blank for the default endpoint.
+Fix: Use a key configured in `FASTDEPLOY_ENDPOINTS`, or leave blank for the default endpoint. If the error shows a JWT token, you pasted the token in the wrong field.
 - Error: `Endpoint '...' is incomplete: missing base_url/token`
 Fix: Ensure the endpoint has `base_url` and either a `token` (default) or a `service_tokens` entry for your service.
+- Error: `Cannot resolve db_path: ...`
+Fix: SSH connection to remote host failed. Check: (1) Use FQDN not short hostname, (2) SSH user has key access, (3) known_hosts is configured.
+- Error: `Failed to backup database: ...` with wrong script
+Fix: Your service token is for the wrong FastDeploy service. Generate a new token for the correct service.
+- Error: `Insufficient permissions` on MinIO upload
+Fix: The user running the backup script needs mc configured. Add mc alias setup to the registration playbook.
 - Can't delete a target
 Fix: Deletion is blocked to preserve audit history. Set `Status = Disabled` instead.
+
+**Reference: Existing Remote Backup Implementations**
+
+For a complete example of a remote backup setup, see:
+- Playbook: `ops-control/playbooks/register-marina-staging-backup.yml`
+- Script: `ops-library/roles/echoport_backup/templates/marina_staging_backup.py.j2`
+- Docs: `ops-control/docs/marina-staging-backup.md`
