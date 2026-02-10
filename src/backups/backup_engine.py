@@ -242,6 +242,7 @@ def _build_backup_context(target: BackupTarget, run: BackupRun) -> dict:
     timestamp = datetime.now(dt_timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
 
     return {
+        "ECHOPORT_ACTION": "backup",
         "ECHOPORT_TARGET": target.name,
         "ECHOPORT_RUN_ID": str(run.id),
         "ECHOPORT_DB_PATH": target.db_path,
