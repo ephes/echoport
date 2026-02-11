@@ -2,7 +2,7 @@
 
 ## Overview
 
-Backup orchestration service for homelab deployments. Manages SQLite backups via FastDeploy integration and stores artifacts in MinIO.
+Backup orchestration service for homelab deployments. Triggers service-owned backup/restore workflows through FastDeploy and stores artifacts in MinIO.
 
 ## Quick Start
 
@@ -43,17 +43,17 @@ User (Dashboard/Cron)
         │
    ┌────┴────┐
    ▼         ▼
-backup.py   MinIO
+service scripts  MinIO
    │
    ▼
-Services (NyxMon, etc.)
+Services (SQLite + PostgreSQL targets)
 ```
 
-Echoport triggers backups via FastDeploy's deployment API. The `backup.py` script runs locally on the server, performs safe SQLite backups, and uploads artifacts to MinIO. See [PRD](specs/2026-01-27_initial_prd.md) for detailed architecture.
+Echoport triggers backup and restore deployments via FastDeploy's API. Backup logic lives in service scripts (generic SQLite or dedicated service-owned implementations such as PostgreSQL flows), and artifacts are uploaded to MinIO. See [PRD](specs/2026-01-27_initial_prd.md) for detailed architecture.
 
 ## Safe Usage
 
-- **SQLite backups are safe**: Echoport uses `sqlite3 .backup` which handles live databases correctly. Prefer low-traffic windows for large databases.
+- **SQLite backups are safe**: service scripts use `sqlite3 .backup` for live SQLite snapshots. Prefer low-traffic windows for large databases.
 - **Restore stops services**: Restore operations stop the target service before overwriting files.
 - **Checksum verification**: Backups include SHA256 checksums. Restore verifies checksum before applying.
 - **Verify backup contents**: `tar -tzf <backup>.tar.gz` to list files.
@@ -115,8 +115,7 @@ Or use Justfile shortcuts: `just backup <target>`, `just devdata`
 
 ## Limitations
 
-- SQLite only (no PostgreSQL support)
-- Single-host deployment (macmini)
+- PostgreSQL is supported via dedicated service-owned scripts, not a shared generic PostgreSQL schema in Echoport
 - No client-side encryption (relies on MinIO server security)
 - Single admin user (no multi-user access control)
 

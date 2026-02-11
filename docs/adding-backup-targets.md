@@ -23,6 +23,7 @@ Schedule: 0 2 * * *
 
 Read this before entering values to avoid validation errors.
 - At least one of `Database path` or `Backup files` is required.
+- For service-owned PostgreSQL scripts (for example `fastdeploy-backup`), `Database path` can be a placeholder value used only to satisfy model validation.
 - All paths must be absolute and under the allowlist `ECHOPORT_ALLOWED_PATH_PREFIXES` (default: `/home/`, `/opt/`, `/var/lib/`). Paths outside the allowlist are rejected.
 - `Backup files` must be a list of paths; in Admin you enter one path per line. For remote targets, each entry must be a directory (not an individual file) — the remote backup script validates this and fails with a clear error otherwise.
 - `Schedule` must be a valid cron expression; leave blank for no scheduled runs.
@@ -43,7 +44,7 @@ Read this before entering values to avoid validation errors.
 | Service token | Text | No | Blank | JWT token for FastDeploy; overrides endpoint/default token if set | (paste JWT) |
 | Service name | Text | No | Blank | Systemd service to stop during restore, max 100 chars | `nyxmon.service` |
 | Restore owner | Text | No | Blank | `user:group` to chown restored files, max 100 chars | `marina:marina` |
-| Database path | Text | No | Blank | Absolute path under allowlist, max 500 chars | `/home/nyxmon/data/db.sqlite3` |
+| Database path | Text | No | Blank | Absolute path under allowlist, max 500 chars. For service-owned PostgreSQL scripts this may be a placeholder path. | `/home/nyxmon/data/db.sqlite3` |
 | Backup files | List (one path per line) | No | Empty list | Absolute paths under allowlist. Remote targets: must be directories. | `/home/nyxmon/uploads` |
 | Schedule | Text | No | Blank | Valid cron expression, max 100 chars | `0 2 * * *` |
 | Retention days | Integer | No | `30` | Days to keep backups | `14` |
@@ -84,6 +85,17 @@ Database path: /home/nyxmon/data/db.sqlite3
 Schedule: 0 3 * * *
 ```
 
+FastDeploy local PostgreSQL target (service-owned script):
+```
+Name: fastdeploy
+FastDeploy service: fastdeploy-backup
+Service name: fastdeploy
+Database path: /home/fastdeploy/site/db.sqlite3  # placeholder for validation
+Backup files: (leave empty)
+Schedule: 0 3 * * *
+Timeout seconds: 1200
+```
+
 ## FastDeploy Endpoint Configuration
 
 FastDeploy uses JWT tokens that are service-specific. Each token is authorized for a particular service. Configure `FASTDEPLOY_ENDPOINTS` in settings with per-service tokens:
@@ -115,10 +127,10 @@ Token lookup order (when `FastDeploy endpoint key` is blank — default endpoint
 
 There are two types of backup targets:
 
-1. **Local targets** (e.g., nyxmon, fastdeploy, echoport) - Services running ON macmini
-   - All share the same `FastDeploy service` value: `echoport-backup`
-   - The `echoport-backup` script accesses files directly via filesystem — Echoport passes the target-specific paths as context
-   - No SSH required
+1. **Local targets** (e.g., nyxmon, echoport, fastdeploy) - Services running ON macmini
+   - Most local SQLite targets use `echoport-backup`.
+   - Some local PostgreSQL targets use dedicated service-owned scripts (for example `fastdeploy-backup`).
+   - Local scripts access files directly via filesystem (no SSH required).
 
 2. **Remote targets** (e.g., marina-staging) - Services running on OTHER hosts
    - Require a DEDICATED FastDeploy service (e.g., `marina-staging-backup`)

@@ -71,18 +71,21 @@ class Command(BaseCommand):
             {
                 "name": "fastdeploy",
                 "defaults": {
-                    "description": "FastDeploy deployment service (PostgreSQL + services)",
+                    "description": (
+                        "FastDeploy PostgreSQL + services + runners backup/restore "
+                        "via service-owned script."
+                    ),
                     "icon": "🚀",
-                    "fastdeploy_service": "echoport-backup",
-                    "service_name": "fastdeploy.service",
-                    "db_path": "",  # PostgreSQL, handled differently
-                    "backup_files": [
-                        "/home/fastdeploy/site/services",
-                    ],
+                    "fastdeploy_service": "fastdeploy-backup",
+                    "service_name": "fastdeploy",
+                    # Placeholder required by current BackupTarget validation.
+                    # The service-owned script handles PostgreSQL backup/restore.
+                    "db_path": "/home/fastdeploy/site/db.sqlite3",
+                    "backup_files": [],
                     "schedule": "0 3 * * *",  # 3am daily
-                    "status": "paused",  # Not active yet
+                    "status": "active",
                     "retention_days": 30,
-                    "timeout_seconds": 900,
+                    "timeout_seconds": 1200,
                     "storage_bucket": "backups",
                 },
             },
