@@ -331,6 +331,18 @@ def _handle_deployment_finished(
         logger.error(f"Restore {run.id} deployment failed: {error_msg}")
 
     run.finished_at = timezone.now()
+
+    # Best-effort DB connection refresh before final save.
+    # For self-restore scenarios (e.g., echoport restoring its own DB),
+    # the underlying SQLite file may have been replaced during restore.
+    # close_old_connections() only closes connections past their max age;
+    # connection.close() forces the active connection closed so Django
+    # re-opens against the new file on next access.
+    try:
+        connection.close()
+    except Exception:
+        pass
+
     run.save()
     return run
 

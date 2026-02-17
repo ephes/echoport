@@ -568,3 +568,39 @@ dd ul {
         background: rgba(0, 0, 0, 0.7);
     }
 }
+
+/* Messages */
+.messages {
+    margin-bottom: 1rem;
+}
+
+.message {
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius);
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.message.warning {
+    background: #fef3c7;
+    border: 1px solid var(--color-warning);
+    color: #92400e;
+}
+
+.message.error {
+    background: #fef2f2;
+    border: 1px solid var(--color-error);
+    color: #991b1b;
+}
+
+.message.success {
+    background: #f0fdf4;
+    border: 1px solid var(--color-success);
+    color: #166534;
+}
+
+.message.info {
+    background: #ecfeff;
+    border: 1px solid var(--color-info);
+    color: #155e75;
+}

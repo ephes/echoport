@@ -16,6 +16,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from django.contrib import messages
+
 from .backup_engine import get_active_run, start_backup, _mark_run_failed
 from .restore_engine import (
     get_active_restore,
@@ -287,6 +289,21 @@ def trigger_restore(request, run_id):
     )
     target = backup_run.target
     triggered_by = request.user.username
+
+    # Block UI self-restore for echoport target — must use CLI command instead.
+    # Self-restore stops the echoport service, which would kill this web process
+    # and the in-flight restore thread. Use: manage.py restore echoport <backup_run_id>
+    if target.name == "echoport":
+        logger.warning(
+            f"UI self-restore blocked for target 'echoport' (backup {run_id}). "
+            "Use CLI: manage.py restore echoport <backup_run_id>"
+        )
+        messages.warning(
+            request,
+            f"Self-restore cannot run from the UI. "
+            f"Use CLI: manage.py restore echoport {run_id}",
+        )
+        return redirect("backups:run_detail", run_id=run_id)
 
     # Check preconditions before creating run (to avoid stuck PENDING runs)
     if not backup_run.checksum_sha256:
