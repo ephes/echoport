@@ -50,7 +50,13 @@
             <dd><code>{{ run.storage_bucket }}/{{ run.storage_key }}</code></dd>
 
             <dt>Size</dt>
-            <dd>{{ run.size_bytes|filesizeformat }} ({{ run.size_bytes|intcomma }} bytes)</dd>
+            <dd>
+                {% if run.size_bytes is not None %}
+                {{ run.size_bytes|filesizeformat }} ({{ run.size_bytes|intcomma }} bytes)
+                {% else %}
+                Unknown
+                {% endif %}
+            </dd>
 
             {% if run.file_count %}
             <dt>Files</dt>

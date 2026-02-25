@@ -87,13 +87,16 @@ class Command(BaseCommand):
             )
 
             if run.status == RestoreRunStatus.SUCCESS:
+                duration_text = (
+                    f"{run.duration_seconds:.1f}s" if run.duration_seconds is not None else "unknown"
+                )
                 self.stdout.write(
                     self.style.SUCCESS(
                         f"Restore completed successfully!\n"
                         f"  Restore ID: {run.id}\n"
                         f"  Backup run: {backup_run_id}\n"
                         f"  Files restored: {run.files_restored or 0}\n"
-                        f"  Duration: {run.duration_seconds:.1f}s"
+                        f"  Duration: {duration_text}"
                     )
                 )
             else:

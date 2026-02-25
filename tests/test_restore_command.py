@@ -103,6 +103,20 @@ class TestRestoreCommand:
         assert "42" in captured.out
 
     @patch("backups.management.commands.restore.start_restore")
+    def test_successful_restore_with_unknown_duration(self, mock_start, restore_target, successful_backup, capsys):
+        mock_run = MagicMock()
+        mock_run.status = RestoreRunStatus.SUCCESS
+        mock_run.id = 43
+        mock_run.files_restored = 5
+        mock_run.duration_seconds = None
+        mock_start.return_value = mock_run
+
+        call_command("restore", "test-restore", str(successful_backup.id))
+
+        captured = capsys.readouterr()
+        assert "Duration: unknown" in captured.out
+
+    @patch("backups.management.commands.restore.start_restore")
     def test_failed_restore(self, mock_start, restore_target, successful_backup):
         mock_run = MagicMock()
         mock_run.status = RestoreRunStatus.FAILED
