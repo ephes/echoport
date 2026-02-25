@@ -86,6 +86,7 @@ class TestHealthEndpoint:
         data = json.loads(response.content)
         assert "status" in data
         assert "targets" in data
+        assert "targets_by_name" in data
         assert "recent_failures" in data
         assert "checked_at" in data
 
@@ -231,6 +232,24 @@ class TestHealthEndpoint:
 
         # Should be limited to 10 most recent
         assert len(data["recent_failures"]) <= 10
+
+    def test_targets_by_name_contains_target_data(self, client, active_target):
+        """targets_by_name should mirror target entries for stable lookup."""
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=timezone.now() - timedelta(hours=1),
+            finished_at=timezone.now() - timedelta(minutes=50),
+        )
+
+        response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert "test-service" in data["targets_by_name"]
+        target = data["targets_by_name"]["test-service"]
+        assert target["name"] == "test-service"
+        assert target["status"] == "ok"
+        assert target["overdue"] is False
 
     def test_failures_older_than_7_days_excluded(self, client, active_target):
         """Failures older than 7 days should not appear in recent_failures."""

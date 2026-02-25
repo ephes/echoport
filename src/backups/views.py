@@ -512,9 +512,17 @@ def health_status(request):
     # Sort failures by timestamp (newest first)
     recent_failures.sort(key=lambda x: x["timestamp"], reverse=True)
 
+    # Convenience map for monitoring systems that need stable, name-based lookup
+    # without relying on array order in "targets".
+    targets_by_name = {
+        target_info["name"]: target_info
+        for target_info in target_statuses
+    }
+
     return JsonResponse({
         "status": overall_status,
         "checked_at": now.isoformat(),
         "targets": target_statuses,
+        "targets_by_name": targets_by_name,
         "recent_failures": recent_failures[:10],  # Limit to 10 most recent
     })
