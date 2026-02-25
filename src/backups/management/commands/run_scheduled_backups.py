@@ -262,9 +262,10 @@ class Command(BaseCommand):
             )
 
             if run.status == BackupRunStatus.SUCCESS:
+                size_text = f"{run.size_bytes:,} bytes" if run.size_bytes is not None else "unknown"
                 self.stdout.write(
                     self.style.SUCCESS(
-                        f"    Success: {run.storage_key} ({run.size_bytes:,} bytes)"
+                        f"    Success: {run.storage_key} ({size_text})"
                     )
                 )
                 return "success"

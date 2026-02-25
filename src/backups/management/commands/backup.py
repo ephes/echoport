@@ -57,13 +57,17 @@ class Command(BaseCommand):
             )
 
             if run.status == BackupRunStatus.SUCCESS:
+                size_text = f"{run.size_bytes:,} bytes" if run.size_bytes is not None else "unknown"
+                duration_text = (
+                    f"{run.duration_seconds:.1f}s" if run.duration_seconds is not None else "unknown"
+                )
                 self.stdout.write(
                     self.style.SUCCESS(
                         f"Backup completed successfully!\n"
                         f"  Run ID: {run.id}\n"
                         f"  Storage: {run.storage_bucket}/{run.storage_key}\n"
-                        f"  Size: {run.size_bytes:,} bytes\n"
-                        f"  Duration: {run.duration_seconds:.1f}s"
+                        f"  Size: {size_text}\n"
+                        f"  Duration: {duration_text}"
                     )
                 )
             else:

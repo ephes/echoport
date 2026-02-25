@@ -284,11 +284,11 @@ def _handle_deployment_finished(
             run.error_message = result.error or "Backup reported failure"
             logger.error(f"Backup {run.id} reported failure: {result.error}")
         else:
-            # No ECHOPORT_RESULT found but deployment succeeded
-            # This might happen if the backup script didn't output the result
-            run.status = BackupRunStatus.SUCCESS
-            logger.warning(
-                f"Backup {run.id} deployment succeeded but no ECHOPORT_RESULT found"
+            # No ECHOPORT_RESULT found - treat as failure to avoid unknown backup state.
+            run.status = BackupRunStatus.FAILED
+            run.error_message = "Backup completed but no result was reported - status unknown"
+            logger.error(
+                f"Backup {run.id} deployment succeeded but no ECHOPORT_RESULT found - marking as failed"
             )
     else:
         # Deployment failed

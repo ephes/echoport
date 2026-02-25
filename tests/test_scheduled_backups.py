@@ -352,6 +352,28 @@ class TestRunScheduledBackupsCommand:
         captured = capsys.readouterr()
         assert "Test backup error" in captured.err
 
+    @patch("backups.management.commands.run_scheduled_backups.start_backup")
+    def test_command_handles_success_without_size_bytes(
+        self, mock_start_backup, scheduled_target, capsys
+    ):
+        """Successful backups with unknown size should not crash output formatting."""
+        mock_run = BackupRun(
+            target=scheduled_target,
+            status=BackupRunStatus.SUCCESS,
+            trigger=BackupTrigger.SCHEDULED,
+            storage_key="test/backup.tar.gz",
+            size_bytes=None,
+        )
+        mock_start_backup.return_value = mock_run
+
+        command = Command()
+        with pytest.raises(SystemExit) as exc_info:
+            command.handle(dry_run=False)
+        assert exc_info.value.code == 0
+
+        captured = capsys.readouterr()
+        assert "unknown" in captured.out
+
     def test_command_handles_invalid_schedule(self, invalid_schedule_target, capsys):
         """Command should skip targets with invalid schedules gracefully."""
         command = Command()
