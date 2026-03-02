@@ -51,6 +51,12 @@ Services (SQLite + PostgreSQL targets)
 
 Echoport triggers backup and restore deployments via FastDeploy's API. Backup logic lives in service scripts (generic SQLite or dedicated service-owned implementations such as PostgreSQL flows), and artifacts are uploaded to MinIO. See [PRD](specs/2026-01-27_initial_prd.md) for detailed architecture.
 
+Backup target model note:
+- Targets use `target_mode` with two contracts:
+  - `generic_paths`: requires `service_name` plus at least one source (`db_path` or `backup_files`)
+  - `service_owned`: service script determines sources; `db_path`/`backup_files` may be empty
+- Default allowed source prefixes include `/home/`, `/opt/`, `/var/lib/`, and `/mnt/cryptdata/`.
+
 ## Safe Usage
 
 - **SQLite backups are safe**: service scripts use `sqlite3 .backup` for live SQLite snapshots. Prefer low-traffic windows for large databases.

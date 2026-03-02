@@ -5,7 +5,7 @@ Concise operator guide for configuring new backup targets in Django Admin.
 ## Quick Start
 
 1. Open Django Admin and go to `Backup Targets` -> `Add`.
-2. Fill the minimal fields: `Name`, `FastDeploy service`, and either `Database path` or `Backup files`.
+2. Set `Target mode` (`generic_paths` or `service_owned`) and fill minimal fields for that mode.
 3. Optionally set a `Schedule` and adjust retention/timeout.
 4. Save.
 
@@ -14,17 +14,20 @@ For remote targets (services on other hosts), see "Adding a Remote Backup Target
 Minimal example (SQLite-only, local target):
 ```
 Name: nyxmon
+Target mode: generic_paths
 FastDeploy service: echoport-backup
 Database path: /home/nyxmon/data/db.sqlite3
+Service name: nyxmon.service
 Schedule: 0 2 * * *
 ```
 
 ## Validation Rules
 
 Read this before entering values to avoid validation errors.
-- At least one of `Database path` or `Backup files` is required.
-- For service-owned PostgreSQL scripts (for example `fastdeploy-backup`), `Database path` can be a placeholder value used only to satisfy model validation.
-- All paths must be absolute and under the allowlist `ECHOPORT_ALLOWED_PATH_PREFIXES` (default: `/home/`, `/opt/`, `/var/lib/`). Paths outside the allowlist are rejected.
+- `Target mode` controls required source fields:
+  - `generic_paths`: requires `Service name` and at least one of `Database path` or `Backup files`.
+  - `service_owned`: allows both `Database path` and `Backup files` to be empty.
+- All paths must be absolute and under the allowlist `ECHOPORT_ALLOWED_PATH_PREFIXES` (default: `/home/`, `/opt/`, `/var/lib/`, `/mnt/cryptdata/`). Paths outside the allowlist are rejected.
 - `Backup files` must be a list of paths; in Admin you enter one path per line. For remote targets, each entry must be a directory (not an individual file) — the remote backup script validates this and fails with a clear error otherwise.
 - `Schedule` must be a valid cron expression; leave blank for no scheduled runs.
 - `FastDeploy endpoint key` must match a key in `FASTDEPLOY_ENDPOINTS`. The endpoint must have `base_url` and a resolvable token: either a `token` (default), a matching `service_tokens[fastdeploy_service]` entry, or a `Service token` set on the target. Leave blank to use the default FastDeploy endpoint.
@@ -39,13 +42,14 @@ Read this before entering values to avoid validation errors.
 | Description | Text | No | Blank | Human-readable description | `NYXMON production backups` |
 | Icon | Text | No | Blank | Emoji or icon identifier, max 50 chars | `📊` |
 | Status | Choice | No | `Active` | `Active`, `Paused`, `Disabled`. Disabled is the retirement mechanism (deletion blocked). | `Active` |
+| Target mode | Choice | No | `generic_paths` | `generic_paths` (requires restore-safe service/source fields) or `service_owned` (service script owns source logic) | `service_owned` |
 | FastDeploy service | Text | Yes | None | FastDeploy service name, max 100 chars | `nyxmon` |
 | FastDeploy endpoint key | Text | No | Blank | Max 50 chars. Must exist in `FASTDEPLOY_ENDPOINTS` if set; blank uses default endpoint | `staging` |
 | Service token | Text | No | Blank | JWT token for FastDeploy; overrides endpoint/default token if set | (paste JWT) |
-| Service name | Text | No | Blank | Systemd service to stop during restore, max 100 chars | `nyxmon.service` |
+| Service name | Text | No | Blank | Systemd service to stop during restore, max 100 chars. Required for `generic_paths` targets. | `nyxmon.service` |
 | Restore owner | Text | No | Blank | `user:group` to chown restored files, max 100 chars | `marina:marina` |
-| Database path | Text | No | Blank | Absolute path under allowlist, max 500 chars. For service-owned PostgreSQL scripts this may be a placeholder path. | `/home/nyxmon/data/db.sqlite3` |
-| Backup files | List (one path per line) | No | Empty list | Absolute paths under allowlist. Remote targets: must be directories. | `/home/nyxmon/uploads` |
+| Database path | Text | No | Blank | Absolute path under allowlist, max 500 chars. Required for `generic_paths` only when `Backup files` is empty. | `/home/nyxmon/data/db.sqlite3` |
+| Backup files | List (one path per line) | No | Empty list | Absolute paths under allowlist. Required for `generic_paths` only when `Database path` is empty. Remote targets: must be directories. | `/home/nyxmon/uploads` |
 | Schedule | Text | No | Blank | Valid cron expression, max 100 chars | `0 2 * * *` |
 | Retention days | Integer | No | `30` | Days to keep backups | `14` |
 | Timeout seconds | Integer | No | `600` | Max time to wait for backup | `900` |
@@ -58,8 +62,10 @@ Read this before entering values to avoid validation errors.
 SQLite app (DB + files):
 ```
 Name: nyxmon
+Target mode: generic_paths
 FastDeploy service: echoport-backup
 Database path: /home/nyxmon/data/db.sqlite3
+Service name: nyxmon.service
 Backup files:
 /home/nyxmon/uploads
 /home/nyxmon/media
@@ -69,7 +75,9 @@ Schedule: 0 2 * * *
 Files-only backup:
 ```
 Name: assets
+Target mode: generic_paths
 FastDeploy service: echoport-backup
+Service name: assets.service
 Backup files:
 /opt/assets/shared
 /var/lib/assets/uploads
@@ -79,18 +87,21 @@ Schedule: 30 1 * * *
 Custom FastDeploy endpoint:
 ```
 Name: nyxmon-staging
+Target mode: generic_paths
 FastDeploy service: nyxmon-staging-backup
 FastDeploy endpoint key: staging
 Database path: /home/nyxmon/data/db.sqlite3
+Service name: nyxmon.service
 Schedule: 0 3 * * *
 ```
 
 FastDeploy local PostgreSQL target (service-owned script):
 ```
 Name: fastdeploy
+Target mode: service_owned
 FastDeploy service: fastdeploy-backup
 Service name: fastdeploy
-Database path: /home/fastdeploy/site/db.sqlite3  # placeholder for validation
+Database path: (leave empty)
 Backup files: (leave empty)
 Schedule: 0 3 * * *
 Timeout seconds: 1200
