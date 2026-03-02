@@ -31,9 +31,9 @@
     max-width: 400px;
     margin: 2rem auto;
     padding: 2rem;
-    background: var(--card-bg, #fff);
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    background: var(--color-surface);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
 }
 
 .login-container h2 {
@@ -54,26 +54,28 @@
 .form-group input {
     width: 100%;
     padding: 0.5rem;
-    border: 1px solid #ccc;
+    border: 1px solid var(--color-border);
     border-radius: 4px;
     font-size: 1rem;
+    background: var(--color-bg);
+    color: var(--color-text);
 }
 
 .login-error {
-    background: #fef2f2;
-    color: #991b1b;
+    background: color-mix(in srgb, var(--color-error) 10%, transparent);
+    color: var(--color-error);
     padding: 1rem;
-    border-radius: 6px;
+    border-radius: var(--radius);
     margin-bottom: 1.5rem;
     text-align: center;
     font-size: 0.95rem;
-    border: 1px solid #fecaca;
+    border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
 }
 
 .btn-primary {
     width: 100%;
     padding: 0.75rem;
-    background: #007bff;
+    background: var(--color-primary);
     color: white;
     border: none;
     border-radius: 4px;
@@ -82,7 +84,7 @@
 }
 
 .btn-primary:hover {
-    background: #0056b3;
+    background: var(--color-primary-hover);
 }
 </style>
 {% endblock %}
