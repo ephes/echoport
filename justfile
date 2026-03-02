@@ -52,6 +52,12 @@ typecheck:
 lint:
     uvx ruff check .
 
+# Run lint, typecheck, and tests
+check:
+    just lint
+    just typecheck
+    just test
+
 # Sync dependencies
 sync:
     uv sync
