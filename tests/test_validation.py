@@ -36,6 +36,7 @@ class TestGetAllowedPathPrefixes:
         assert "/home/" in prefixes
         assert "/opt/" in prefixes
         assert "/var/lib/" in prefixes
+        assert "/mnt/cryptdata/" in prefixes
 
     @override_settings(ECHOPORT_ALLOWED_PATH_PREFIXES=["/srv/", "/data"])
     def test_custom_prefixes(self):
@@ -54,7 +55,7 @@ class TestGetAllowedPathPrefixes:
     def test_filters_invalid_entries(self):
         # All entries invalid, should fall back to defaults
         prefixes = get_allowed_path_prefixes()
-        assert prefixes == ["/home/", "/opt/", "/var/lib/"]
+        assert prefixes == ["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"]
 
     @override_settings(ECHOPORT_ALLOWED_PATH_PREFIXES=["/"])
     def test_rejects_root_prefix(self):
@@ -62,14 +63,14 @@ class TestGetAllowedPathPrefixes:
         prefixes = get_allowed_path_prefixes()
         assert "/" not in prefixes
         # Falls back to defaults
-        assert prefixes == ["/home/", "/opt/", "/var/lib/"]
+        assert prefixes == ["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"]
 
     @override_settings(ECHOPORT_ALLOWED_PATH_PREFIXES=["relative/path", "no-slash"])
     def test_rejects_relative_paths(self):
         """Relative paths should be rejected."""
         prefixes = get_allowed_path_prefixes()
         # Falls back to defaults
-        assert prefixes == ["/home/", "/opt/", "/var/lib/"]
+        assert prefixes == ["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"]
 
     @override_settings(ECHOPORT_ALLOWED_PATH_PREFIXES=["/home/../etc/"])
     def test_normalizes_traversal_in_prefix(self):
@@ -102,7 +103,7 @@ class TestGetAllowedPathPrefixes:
         """// alone should be rejected (collapses to /)."""
         prefixes = get_allowed_path_prefixes()
         # Falls back to defaults since // -> / which is rejected
-        assert prefixes == ["/home/", "/opt/", "/var/lib/"]
+        assert prefixes == ["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"]
 
 
 class TestValidatePath:
@@ -393,25 +394,69 @@ class TestValidateEndpointKey:
 
 class TestValidateBackupSource:
     def test_db_path_only(self):
-        error = validate_backup_source("/home/app/db.sqlite3", [])
+        error = validate_backup_source(
+            "/home/app/db.sqlite3",
+            [],
+            target_mode="generic_paths",
+            service_name="app.service",
+        )
         assert error is None
 
     def test_backup_files_only(self):
-        error = validate_backup_source("", ["/home/app/data"])
+        error = validate_backup_source(
+            "",
+            ["/home/app/data"],
+            target_mode="generic_paths",
+            service_name="app.service",
+        )
         assert error is None
 
     def test_both_provided(self):
-        error = validate_backup_source("/home/app/db.sqlite3", ["/home/app/data"])
+        error = validate_backup_source(
+            "/home/app/db.sqlite3",
+            ["/home/app/data"],
+            target_mode="generic_paths",
+            service_name="app.service",
+        )
         assert error is None
 
     def test_neither_provided(self):
-        error = validate_backup_source("", [])
+        error = validate_backup_source(
+            "",
+            [],
+            target_mode="generic_paths",
+            service_name="app.service",
+        )
         assert error is not None
         assert "at least one" in error.lower()
 
     def test_none_values(self):
-        error = validate_backup_source(None, None)
+        error = validate_backup_source(
+            None,
+            None,
+            target_mode="generic_paths",
+            service_name="app.service",
+        )
         assert error is not None
+
+    def test_generic_paths_requires_service_name(self):
+        error = validate_backup_source(
+            "/home/app/db.sqlite3",
+            [],
+            target_mode="generic_paths",
+            service_name="",
+        )
+        assert error is not None
+        assert "service name is required" in error.lower()
+
+    def test_service_owned_allows_empty_sources_and_service_name(self):
+        error = validate_backup_source(
+            "",
+            [],
+            target_mode="service_owned",
+            service_name="",
+        )
+        assert error is None
 
 
 @pytest.mark.django_db
@@ -426,6 +471,7 @@ class TestModelValidation:
         target = BackupTarget(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             schedule="invalid cron",
         )
@@ -442,6 +488,7 @@ class TestModelValidation:
         target = BackupTarget(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             fastdeploy_endpoint_key="nonexistent",
         )
@@ -457,6 +504,7 @@ class TestModelValidation:
         target = BackupTarget(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/../etc/passwd",
         )
         with pytest.raises(ValidationError) as exc_info:
@@ -471,6 +519,7 @@ class TestModelValidation:
         target = BackupTarget(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
         )
         # Bypass Python to set invalid type
@@ -489,6 +538,7 @@ class TestModelValidation:
         target = BackupTarget(
             name="test-token-override",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             fastdeploy_endpoint_key="staging",
             service_token="my-jwt-token",
@@ -503,6 +553,7 @@ class TestModelValidation:
         target = BackupTarget(
             name="test-whitespace-token",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             service_token="   ",
         )
@@ -516,8 +567,39 @@ class TestModelValidation:
         target = BackupTarget(
             name="test-trimmed-token",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             service_token="  my-token  ",
         )
         target.save()
         assert target.service_token == "my-token"
+
+    def test_generic_paths_requires_service_name_on_save(self):
+        """generic_paths target without service_name should be rejected."""
+        from django.core.exceptions import ValidationError
+        from backups.models import BackupTarget
+
+        target = BackupTarget(
+            name="test-missing-service",
+            fastdeploy_service="test-service",
+            target_mode="generic_paths",
+            db_path="/home/test/db.sqlite3",
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            target.save()
+        assert "__all__" in exc_info.value.message_dict
+
+    def test_service_owned_allows_empty_sources_on_save(self):
+        """service_owned target can omit both db_path and backup_files."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget(
+            name="test-service-owned",
+            fastdeploy_service="test-service",
+            target_mode="service_owned",
+            db_path="",
+            backup_files=[],
+            service_name="",
+        )
+        target.save()
+        assert target.pk is not None

@@ -22,6 +22,7 @@ def active_target(db):
     return BackupTarget.objects.create(
         name="test-service",
         fastdeploy_service="echoport-backup",
+        service_name="test-service.service",
         db_path="/tmp/test.db",
         schedule="0 2 * * *",  # Daily at 2am
         status="active",
@@ -34,6 +35,7 @@ def target_without_schedule(db):
     return BackupTarget.objects.create(
         name="manual-only",
         fastdeploy_service="echoport-backup",
+        service_name="manual-only.service",
         db_path="/tmp/manual.db",
         schedule="",
         status="active",
@@ -46,6 +48,7 @@ def paused_target(db):
     return BackupTarget.objects.create(
         name="paused-service",
         fastdeploy_service="echoport-backup",
+        service_name="paused-service.service",
         db_path="/tmp/paused.db",
         status="paused",
     )
@@ -62,6 +65,7 @@ def target_with_invalid_schedule(db):
     target = BackupTarget.objects.create(
         name="invalid-cron",
         fastdeploy_service="echoport-backup",
+        service_name="invalid-cron.service",
         db_path="/tmp/invalid.db",
         schedule="0 2 * * *",  # Valid schedule for initial creation
         status="active",
@@ -295,6 +299,7 @@ class TestHealthEndpoint:
         BackupTarget.objects.create(
             name="overdue-target",
             fastdeploy_service="echoport-backup",
+            service_name="overdue-target.service",
             db_path="/tmp/overdue.db",
             schedule="0 2 * * *",
             status="active",
@@ -304,6 +309,7 @@ class TestHealthEndpoint:
         target2 = BackupTarget.objects.create(
             name="failed-target",
             fastdeploy_service="echoport-backup",
+            service_name="failed-target.service",
             db_path="/tmp/failed.db",
             schedule="",  # No schedule so not overdue
             status="active",

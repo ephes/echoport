@@ -2,7 +2,7 @@ from django import forms
 from django.contrib import admin
 from django.core.exceptions import ValidationError
 
-from .models import BackupRun, BackupTarget, RestoreRun
+from .models import BackupRun, BackupTarget, BackupTargetMode, RestoreRun
 from .validation import (
     get_allowed_path_prefixes,
     validate_backup_source,
@@ -35,7 +35,16 @@ class BackupTargetAdminForm(forms.ModelForm):
         # Update help text with current allowed prefixes
         allowed = ", ".join(get_allowed_path_prefixes())
         self.fields["backup_files_text"].help_text = (
-            f"One file/directory path per line. Must be under: {allowed}"
+            f"One file/directory path per line. Must be under: {allowed}. "
+            f"Required for '{BackupTargetMode.GENERIC_PATHS}' when db_path is empty."
+        )
+        self.fields["db_path"].help_text = (
+            f"{self.fields['db_path'].help_text} "
+            f"Required for '{BackupTargetMode.GENERIC_PATHS}' when backup_files is empty."
+        )
+        self.fields["service_name"].help_text = (
+            f"{self.fields['service_name'].help_text} "
+            f"Required for '{BackupTargetMode.GENERIC_PATHS}'."
         )
         # Convert JSON list to newline-separated text for editing.
         # Guard against invalid legacy data (non-list or non-string items) by
@@ -93,11 +102,18 @@ class BackupTargetAdminForm(forms.ModelForm):
     def clean(self):
         """Cross-field validation."""
         cleaned_data = super().clean()
+        target_mode = cleaned_data.get("target_mode", BackupTargetMode.GENERIC_PATHS)
         db_path = cleaned_data.get("db_path", "")
         backup_files = cleaned_data.get("backup_files_text", [])
+        service_name = cleaned_data.get("service_name", "")
 
-        # Require at least one of db_path or backup_files
-        error = validate_backup_source(db_path, backup_files)
+        # Mode-aware source validation
+        error = validate_backup_source(
+            db_path,
+            backup_files,
+            target_mode=target_mode,
+            service_name=service_name,
+        )
         if error:
             raise ValidationError(error)
 
@@ -122,14 +138,14 @@ class BackupTargetAdminForm(forms.ModelForm):
 @admin.register(BackupTarget)
 class BackupTargetAdmin(admin.ModelAdmin):
     form = BackupTargetAdminForm
-    list_display = ["name", "status", "schedule", "fastdeploy_service", "has_service_token", "updated_at"]
-    list_filter = ["status"]
+    list_display = ["name", "target_mode", "status", "schedule", "fastdeploy_service", "has_service_token", "updated_at"]
+    list_filter = ["target_mode", "status"]
     search_fields = ["name", "description"]
     readonly_fields = ["created_at", "updated_at"]
 
     fieldsets = [
         (None, {
-            "fields": ["name", "description", "icon", "status"],
+            "fields": ["name", "description", "icon", "status", "target_mode"],
         }),
         ("FastDeploy Configuration", {
             "fields": ["fastdeploy_service", "fastdeploy_endpoint_key",
@@ -138,6 +154,10 @@ class BackupTargetAdmin(admin.ModelAdmin):
         }),
         ("Backup Source", {
             "fields": ["db_path", "backup_files_text", "backup_files"],
+            "description": (
+                "Mode rules: 'generic_paths' requires service_name and at least one of "
+                "db_path/backup_files. 'service_owned' allows both source fields empty."
+            ),
         }),
         ("Schedule & Retention", {
             "fields": ["schedule", "retention_days", "timeout_seconds", "storage_bucket"],

@@ -23,6 +23,7 @@ def restore_target(db):
         name="test-restore",
         description="Test restore target",
         fastdeploy_service="echoport-backup",
+        service_name="test-restore.service",
         db_path="/tmp/test.db",
         backup_files=["/tmp/test.txt"],
         status="active",
@@ -55,6 +56,7 @@ class TestRestoreCommand:
         BackupTarget.objects.create(
             name="paused-target",
             fastdeploy_service="echoport-backup",
+            service_name="paused-target.service",
             db_path="/tmp/test.db",
             status="paused",
         )
@@ -149,6 +151,7 @@ class TestRestoreCommand:
         other = BackupTarget.objects.create(
             name="other-target",
             fastdeploy_service="echoport-backup",
+            service_name="other-target.service",
             db_path="/tmp/other.db",
             status="active",
         )
@@ -170,6 +173,7 @@ class TestSelfRestoreUIBlock:
             name="echoport",
             description="Echoport self-backup",
             fastdeploy_service="echoport-self-backup",
+            service_name="echoport.service",
             db_path="/home/echoport/site/src/django/db.sqlite3",
             status="active",
         )
@@ -206,6 +210,7 @@ class TestSelfRestoreUIBlock:
         target = BackupTarget.objects.create(
             name="other-service",
             fastdeploy_service="echoport-backup",
+            service_name="other-service.service",
             db_path="/tmp/other.db",
             status="active",
         )

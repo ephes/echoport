@@ -31,6 +31,7 @@ class TestBackupTargetAdminForm:
         target = BackupTarget.objects.create(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             backup_files=["/home/test/a.txt", "/home/test/b.txt"],
         )
@@ -42,6 +43,7 @@ class TestBackupTargetAdminForm:
         target = BackupTarget.objects.create(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             backup_files=[],
         )
@@ -54,6 +56,7 @@ class TestBackupTargetAdminForm:
         target = BackupTarget.objects.create(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             backup_files=[],  # Empty list is falsy
         )
@@ -67,6 +70,7 @@ class TestBackupTargetAdminForm:
         target = BackupTarget.objects.create(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
         )
         # Set invalid data via update to bypass validation
@@ -83,6 +87,7 @@ class TestBackupTargetAdminForm:
         target = BackupTarget.objects.create(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
         )
         # Set invalid data via raw SQL or update
@@ -102,6 +107,8 @@ class TestBackupTargetAdminForm:
         form = BackupTargetAdminForm(data={
             "name": "test",
             "fastdeploy_service": "test-service",
+            "target_mode": "generic_paths",
+            "service_name": "test.service",
             "db_path": "/home/test/db.sqlite3",
             "backup_files_text": "/home/test/a.txt\n/home/test/b.txt",
             "backup_files": "[]",  # Hidden field
@@ -118,6 +125,8 @@ class TestBackupTargetAdminForm:
         form = BackupTargetAdminForm(data={
             "name": "test",
             "fastdeploy_service": "test-service",
+            "target_mode": "generic_paths",
+            "service_name": "test.service",
             "db_path": "/home/test/db.sqlite3",
             "backup_files_text": "/home/test/a.txt\n\n/home/test/b.txt\n",
             "backup_files": "[]",
@@ -134,6 +143,8 @@ class TestBackupTargetAdminForm:
         form = BackupTargetAdminForm(data={
             "name": "test",
             "fastdeploy_service": "test-service",
+            "target_mode": "generic_paths",
+            "service_name": "test.service",
             "db_path": "/home/test/db.sqlite3",
             "backup_files_text": "/home/test/a.txt\n/etc/passwd",  # /etc not allowed
             "backup_files": "[]",
@@ -150,6 +161,8 @@ class TestBackupTargetAdminForm:
         form = BackupTargetAdminForm(data={
             "name": "test",
             "fastdeploy_service": "test-service",
+            "target_mode": "generic_paths",
+            "service_name": "test.service",
             "db_path": "",
             "backup_files_text": "",
             "backup_files": "[]",
@@ -177,6 +190,7 @@ class TestServiceTokenField:
         target = BackupTarget.objects.create(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
             service_token="my-secret-token",
         )
@@ -202,8 +216,10 @@ class TestServiceTokenField:
         form = BackupTargetAdminForm(data={
             "name": "test",
             "fastdeploy_service": "test-service",
+            "target_mode": "generic_paths",
             "fastdeploy_endpoint_key": "staging",
             "service_token": "my-jwt-token",
+            "service_name": "test.service",
             "db_path": "/home/test/db.sqlite3",
             "backup_files_text": "",
             "backup_files": "[]",
@@ -233,9 +249,27 @@ class TestBackupTargetAdmin:
         target = BackupTarget.objects.create(
             name="test",
             fastdeploy_service="test-service",
+            service_name="test.service",
             db_path="/home/test/db.sqlite3",
         )
         assert admin.has_delete_permission(request, target) is False
+
+    def test_form_service_owned_allows_empty_sources(self):
+        """service_owned mode should allow empty db_path and backup_files."""
+        form = BackupTargetAdminForm(data={
+            "name": "test-owned",
+            "fastdeploy_service": "test-service",
+            "target_mode": "service_owned",
+            "service_name": "",
+            "db_path": "",
+            "backup_files_text": "",
+            "backup_files": "[]",
+            "status": "active",
+            "retention_days": 30,
+            "timeout_seconds": 600,
+            "storage_bucket": "backups",
+        })
+        assert form.is_valid(), form.errors
 
 
 @pytest.mark.django_db

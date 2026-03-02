@@ -22,6 +22,11 @@ class BackupTrigger(models.TextChoices):
     API = "api", "API"
 
 
+class BackupTargetMode(models.TextChoices):
+    GENERIC_PATHS = "generic_paths", "Generic paths"
+    SERVICE_OWNED = "service_owned", "Service-owned"
+
+
 class BackupTarget(models.Model):
     """
     Source of truth for backup configuration.
@@ -72,6 +77,15 @@ class BackupTarget(models.Model):
         default="",
         help_text="User:group to chown restored files (e.g., 'marina:marina'). "
                   "If blank, ownership is not changed after restore.",
+    )
+    target_mode = models.CharField(
+        max_length=20,
+        choices=BackupTargetMode.choices,
+        default=BackupTargetMode.GENERIC_PATHS,
+        help_text=(
+            "Target contract mode. 'Generic paths' requires service_name and at least one "
+            "of db_path/backup_files. 'Service-owned' allows empty source fields."
+        ),
     )
 
     # Backup source configuration - passed to FastDeploy as context
@@ -150,6 +164,12 @@ class BackupTarget(models.Model):
         if self.service_token:
             self.service_token = self.service_token.strip()
 
+        # Normalize service fields
+        if self.service_name:
+            self.service_name = self.service_name.strip()
+        if self.restore_owner:
+            self.restore_owner = self.restore_owner.strip()
+
         # Normalize and validate db_path (persists the trimmed value)
         if self.db_path:
             result = validate_path(self.db_path)
@@ -182,7 +202,12 @@ class BackupTarget(models.Model):
                 errors["fastdeploy_endpoint_key"] = result.error
 
         # Require at least one backup source
-        source_error = validate_backup_source(self.db_path, self.backup_files)
+        source_error = validate_backup_source(
+            self.db_path,
+            self.backup_files,
+            target_mode=self.target_mode,
+            service_name=self.service_name,
+        )
         if source_error:
             errors["__all__"] = source_error
 

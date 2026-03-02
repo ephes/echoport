@@ -11,6 +11,7 @@ class TestBackupTarget:
         target = BackupTarget.objects.create(
             name="nyxmon",
             fastdeploy_service="echoport-backup",
+            service_name="nyxmon.service",
             db_path="/home/nyxmon/site/db.sqlite3",
         )
         assert target.id is not None
@@ -24,6 +25,7 @@ class TestBackupTarget:
             BackupTarget.objects.create(
                 name=backup_target.name,
                 fastdeploy_service="echoport-backup",
+                service_name="dup.service",
                 db_path="/tmp/other.db",
             )
 

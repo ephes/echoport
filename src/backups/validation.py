@@ -40,7 +40,11 @@ def get_allowed_path_prefixes() -> list[str]:
 
     Prefixes must end with / to ensure path segment boundaries.
     """
-    raw = getattr(settings, "ECHOPORT_ALLOWED_PATH_PREFIXES", ["/home/", "/opt/", "/var/lib/"])
+    raw = getattr(
+        settings,
+        "ECHOPORT_ALLOWED_PATH_PREFIXES",
+        ["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"],
+    )
 
     # Sanitize: strip whitespace, normalize, drop invalid entries
     sanitized = []
@@ -69,7 +73,7 @@ def get_allowed_path_prefixes() -> list[str]:
 
     # Fallback if all prefixes were invalid
     if not sanitized:
-        return ["/home/", "/opt/", "/var/lib/"]
+        return ["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"]
 
     return sanitized
 
@@ -240,13 +244,24 @@ def validate_endpoint_key(
     return ValidationResult(value=endpoint_key)
 
 
-def validate_backup_source(db_path: str, backup_files: list) -> str | None:
+def validate_backup_source(
+    db_path: str,
+    backup_files: list,
+    target_mode: str = "generic_paths",
+    service_name: str = "",
+) -> str | None:
     """
-    Validate that at least one backup source is specified.
+    Validate source requirements based on target mode.
 
     Returns:
         Error message if invalid, None if valid
     """
+    if target_mode == "service_owned":
+        return None
+
+    if not (service_name or "").strip():
+        return "Service name is required for 'generic_paths' targets."
+
     if not db_path and not backup_files:
         return "At least one of 'Database path' or 'Backup files' must be specified."
     return None

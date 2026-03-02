@@ -21,6 +21,7 @@ def scheduled_target(db):
         name="scheduled-test",
         description="Test target with schedule",
         fastdeploy_service="echoport-backup",
+        service_name="scheduled-test.service",
         db_path="/tmp/test.db",
         schedule="0 2 * * *",  # Daily at 2am
         status=BackupStatus.ACTIVE,
@@ -34,6 +35,7 @@ def unscheduled_target(db):
         name="unscheduled-test",
         description="Test target without schedule",
         fastdeploy_service="echoport-backup",
+        service_name="unscheduled-test.service",
         db_path="/tmp/test.db",
         schedule="",
         status=BackupStatus.ACTIVE,
@@ -47,6 +49,7 @@ def paused_target(db):
         name="paused-test",
         description="Paused target",
         fastdeploy_service="echoport-backup",
+        service_name="paused-test.service",
         db_path="/tmp/test.db",
         schedule="0 2 * * *",
         status=BackupStatus.PAUSED,
@@ -65,6 +68,7 @@ def invalid_schedule_target(db):
         name="invalid-schedule-test",
         description="Target with invalid schedule",
         fastdeploy_service="echoport-backup",
+        service_name="invalid-schedule-test.service",
         db_path="/tmp/test.db",
         schedule="0 2 * * *",  # Valid schedule for initial creation
         status=BackupStatus.ACTIVE,

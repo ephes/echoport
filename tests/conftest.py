@@ -10,6 +10,7 @@ def backup_target(db):
         name="test-target",
         description="Test backup target",
         fastdeploy_service="echoport-backup",
+        service_name="test-target.service",
         db_path="/tmp/test.db",
         backup_files=["/tmp/test.txt"],
         schedule="0 2 * * *",

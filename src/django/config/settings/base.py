@@ -150,7 +150,7 @@ ECHOPORT_CACHE_DIR = env("ECHOPORT_CACHE_DIR", default="")  # For scheduler lock
 # Configurable to support different deployment layouts
 ECHOPORT_ALLOWED_PATH_PREFIXES = env.list(
     "ECHOPORT_ALLOWED_PATH_PREFIXES",
-    default=["/home/", "/opt/", "/var/lib/"]
+    default=["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"]
 )
 
 # MinIO settings (for retention cleanup)

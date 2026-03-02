@@ -18,6 +18,7 @@ def backup_target(db):
         name="test-backup",
         description="Test backup target",
         fastdeploy_service="echoport-backup",
+        service_name="test-backup.service",
         db_path="/tmp/test.db",
         backup_files=["/tmp/test.txt"],
         status="active",
