@@ -138,8 +138,17 @@ class BackupTargetAdminForm(forms.ModelForm):
 @admin.register(BackupTarget)
 class BackupTargetAdmin(admin.ModelAdmin):
     form = BackupTargetAdminForm
-    list_display = ["name", "target_mode", "status", "schedule", "fastdeploy_service", "has_service_token", "updated_at"]
-    list_filter = ["target_mode", "status"]
+    list_display = [
+        "name",
+        "target_mode",
+        "status",
+        "schedule",
+        "schedule_required",
+        "fastdeploy_service",
+        "has_service_token",
+        "updated_at",
+    ]
+    list_filter = ["target_mode", "status", "schedule_required"]
     search_fields = ["name", "description"]
     readonly_fields = ["created_at", "updated_at"]
 
@@ -160,8 +169,15 @@ class BackupTargetAdmin(admin.ModelAdmin):
             ),
         }),
         ("Schedule & Retention", {
-            "fields": ["schedule", "retention_days", "timeout_seconds", "storage_bucket"],
+            "fields": [
+                "schedule",
+                "schedule_required",
+                "retention_days",
+                "timeout_seconds",
+                "storage_bucket",
+            ],
             "description": "Schedule uses cron syntax (e.g., '0 2 * * *' for 2am daily). "
+                          "Enable schedule required for targets that must never become manual-only. "
                           "Note: Paused/disabled targets are excluded from retention cleanup.",
         }),
         ("Timestamps", {

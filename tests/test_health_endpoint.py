@@ -1,7 +1,8 @@
 """Tests for the health status endpoint."""
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
+from unittest.mock import patch
 
 import pytest
 from django.test import Client
@@ -43,6 +44,23 @@ def target_without_schedule(db):
 
 
 @pytest.fixture
+def target_missing_required_schedule(db):
+    """Simulate configuration drift that bypassed model validation."""
+    target = BackupTarget.objects.create(
+        name="required-schedule",
+        fastdeploy_service="echoport-backup",
+        service_name="required-schedule.service",
+        db_path="/tmp/required.db",
+        schedule="0 2 * * *",
+        schedule_required=True,
+        status="active",
+    )
+    BackupTarget.objects.filter(pk=target.pk).update(schedule="")
+    target.refresh_from_db()
+    return target
+
+
+@pytest.fixture
 def paused_target(db):
     """Create a paused backup target (should not appear in health)."""
     return BackupTarget.objects.create(
@@ -50,6 +68,20 @@ def paused_target(db):
         fastdeploy_service="echoport-backup",
         service_name="paused-service.service",
         db_path="/tmp/paused.db",
+        status="paused",
+    )
+
+
+@pytest.fixture
+def paused_required_target(db):
+    """Create a required target whose backup operation has been paused."""
+    return BackupTarget.objects.create(
+        name="paused-required",
+        fastdeploy_service="echoport-backup",
+        service_name="paused-required.service",
+        db_path="/tmp/paused-required.db",
+        schedule="0 2 * * *",
+        schedule_required=True,
         status="paused",
     )
 
@@ -71,6 +103,23 @@ def target_with_invalid_schedule(db):
         status="active",
     )
     # Bypass model validation to set invalid schedule
+    BackupTarget.objects.filter(pk=target.pk).update(schedule="not a valid cron")
+    target.refresh_from_db()
+    return target
+
+
+@pytest.fixture
+def required_target_with_invalid_schedule(db):
+    """Simulate malformed required-schedule drift that bypassed validation."""
+    target = BackupTarget.objects.create(
+        name="invalid-required-cron",
+        fastdeploy_service="echoport-backup",
+        service_name="invalid-required-cron.service",
+        db_path="/tmp/invalid-required.db",
+        schedule="0 2 * * *",
+        schedule_required=True,
+        status="active",
+    )
     BackupTarget.objects.filter(pk=target.pk).update(schedule="not a valid cron")
     target.refresh_from_db()
     return target
@@ -112,6 +161,30 @@ class TestHealthEndpoint:
         assert data["targets"][0]["name"] == "test-service"
         assert data["targets"][0]["status"] == "ok"
         assert data["targets"][0]["overdue"] is False
+
+    def test_required_target_healthy_contract(self, client, active_target):
+        """A healthy required target exposes every named-monitor field."""
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=datetime_timezone.utc)
+        active_target.schedule_required = True
+        active_target.save()
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=now - timedelta(hours=1),
+            finished_at=now - timedelta(minutes=50),
+        )
+
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+        target = data["targets_by_name"]["test-service"]
+
+        assert data["status"] == "healthy"
+        assert target["status"] == "ok"
+        assert target["target_status"] == "active"
+        assert target["schedule_required"] is True
+        assert target["schedule"] == "0 2 * * *"
+        assert target["next_scheduled"] is not None
 
     def test_overdue_status_when_backup_missed(self, client, active_target):
         """Status should be overdue when backup is older than last scheduled time."""
@@ -201,6 +274,22 @@ class TestHealthEndpoint:
         assert data["targets"][0]["status"] == "invalid_schedule"
         assert data["targets"][0]["next_scheduled"] is None
 
+    def test_invalid_required_schedule_is_unhealthy(
+        self, client, required_target_with_invalid_schedule
+    ):
+        """A malformed required schedule is a data-risk contract violation."""
+        response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "unhealthy"
+        assert data["targets"][0]["status"] == "invalid_schedule"
+        assert data["targets"][0]["schedule_required"] is True
+        assert data["targets"][0]["next_scheduled"] is None
+        named_target = data["targets_by_name"]["invalid-required-cron"]
+        assert named_target["status"] == "invalid_schedule"
+        assert named_target["schedule_required"] is True
+        assert named_target["next_scheduled"] is None
+
     def test_paused_targets_excluded(self, client, active_target, paused_target):
         """Paused targets should not appear in health status."""
         response = client.get(reverse("backups:health_status"))
@@ -209,6 +298,103 @@ class TestHealthEndpoint:
         target_names = [t["name"] for t in data["targets"]]
         assert "test-service" in target_names
         assert "paused-service" not in target_names
+
+    def test_paused_required_target_is_unhealthy(
+        self, client, paused_required_target
+    ):
+        """Pausing a required target remains visible as a Tier 1 failure."""
+        response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "unhealthy"
+        assert data["targets_by_name"]["paused-required"]["status"] == (
+            "paused_required"
+        )
+        assert data["targets_by_name"]["paused-required"]["target_status"] == "paused"
+        assert data["targets_by_name"]["paused-required"]["schedule_required"] is True
+        assert data["targets_by_name"]["paused-required"]["next_scheduled"] is None
+        assert data["targets_by_name"]["paused-required"]["overdue"] is False
+
+    def test_paused_required_target_does_not_taint_healthy_required_entry(
+        self, client, active_target, paused_required_target
+    ):
+        """A separate contract violation changes only aggregate health."""
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=datetime_timezone.utc)
+        active_target.schedule_required = True
+        active_target.save()
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=now - timedelta(hours=1),
+            finished_at=now - timedelta(minutes=50),
+        )
+
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        active = data["targets_by_name"]["test-service"]
+        paused = data["targets_by_name"]["paused-required"]
+        assert data["status"] == "unhealthy"
+        assert active["status"] == "ok"
+        assert active["next_scheduled"] is not None
+        assert paused["status"] == "paused_required"
+
+    def test_paused_required_target_with_cleared_schedule_is_unhealthy(
+        self, client, paused_required_target
+    ):
+        """Clearing a required schedule while paused cannot hide the target."""
+        paused_required_target.schedule = ""
+        paused_required_target.save()
+
+        response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "unhealthy"
+        target = data["targets_by_name"]["paused-required"]
+        assert target["status"] == "paused_required"
+        assert target["next_scheduled"] is None
+        assert target["overdue"] is False
+
+    def test_paused_required_target_omits_historical_failures(
+        self, client, paused_required_target
+    ):
+        """Paused required state is the sole actionable health reason."""
+        BackupRun.objects.create(
+            target=paused_required_target,
+            status=BackupRunStatus.FAILED,
+            started_at=timezone.now() - timedelta(hours=1),
+            finished_at=timezone.now() - timedelta(hours=1),
+        )
+
+        response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "unhealthy"
+        assert data["targets_by_name"]["paused-required"]["status"] == (
+            "paused_required"
+        )
+        assert data["recent_failures"] == []
+
+    def test_disabled_required_target_is_absent_and_requires_external_assertion(
+        self, client, db
+    ):
+        """Intentional retirement is absent from generic active-target health."""
+        BackupTarget.objects.create(
+            name="disabled-required",
+            fastdeploy_service="echoport-backup",
+            service_name="disabled-required.service",
+            db_path="/tmp/disabled-required.db",
+            schedule="",
+            schedule_required=True,
+            status="disabled",
+        )
+
+        response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "healthy"
+        assert "disabled-required" not in data["targets_by_name"]
 
     def test_target_without_schedule(self, client, target_without_schedule):
         """Targets without schedule should show ok status (not overdue)."""
@@ -219,6 +405,21 @@ class TestHealthEndpoint:
         assert data["targets"][0]["status"] == "ok"
         assert data["targets"][0]["overdue"] is False
         assert data["targets"][0]["next_scheduled"] is None
+        assert data["targets"][0]["schedule_required"] is False
+
+    def test_required_target_without_schedule_is_unhealthy(
+        self, client, target_missing_required_schedule
+    ):
+        """Required schedule drift should be visible as a data-risk condition."""
+        response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "unhealthy"
+        assert data["targets"][0]["status"] == "missing_schedule"
+        assert data["targets"][0]["overdue"] is False
+        assert data["targets"][0]["next_scheduled"] is None
+        assert data["targets"][0]["schedule_required"] is True
+        assert data["targets_by_name"]["required-schedule"] == data["targets"][0]
 
     def test_recent_failures_limited(self, client, active_target):
         """Recent failures should be limited to prevent response bloat."""
@@ -335,3 +536,58 @@ class TestHealthEndpoint:
         statuses = {t["name"]: t["status"] for t in data["targets"]}
         assert statuses["overdue-target"] == "overdue"
         assert statuses["failed-target"] == "last_failed"
+
+    def test_required_target_latest_failure_is_unhealthy(
+        self, client, active_target
+    ):
+        """A current failed run on a required target is immediately critical."""
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=datetime_timezone.utc)
+        active_target.schedule_required = True
+        active_target.save()
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=now - timedelta(hours=2),
+            finished_at=now - timedelta(hours=2),
+        )
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.FAILED,
+            started_at=now - timedelta(hours=1),
+            finished_at=now - timedelta(hours=1),
+        )
+
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "unhealthy"
+        assert data["targets_by_name"]["test-service"]["status"] == "last_failed"
+
+    def test_required_target_recovery_keeps_only_degraded_failure_history(
+        self, client, active_target
+    ):
+        """A later success clears critical state without erasing failure history."""
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=datetime_timezone.utc)
+        active_target.schedule_required = True
+        active_target.save()
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.FAILED,
+            started_at=now - timedelta(hours=2),
+            finished_at=now - timedelta(hours=2),
+        )
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=now - timedelta(hours=1),
+            finished_at=now - timedelta(minutes=50),
+        )
+
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
+        data = json.loads(response.content)
+
+        assert data["status"] == "degraded"
+        assert data["targets_by_name"]["test-service"]["status"] == "ok"
+        assert len(data["recent_failures"]) == 1

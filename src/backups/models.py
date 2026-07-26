@@ -7,6 +7,11 @@ class BackupStatus(models.TextChoices):
     PAUSED = "paused", "Paused"
     DISABLED = "disabled", "Disabled"
 
+    @classmethod
+    def schedule_contract_observed_values(cls):
+        """Statuses in which a required target must remain health-visible."""
+        return tuple(value for value in cls.values if value != cls.DISABLED)
+
 
 class BackupRunStatus(models.TextChoices):
     PENDING = "pending", "Pending"
@@ -106,6 +111,14 @@ class BackupTarget(models.Model):
         blank=True,
         help_text="Cron schedule expression (e.g., '0 2 * * *' for 2am daily)",
     )
+    schedule_required = models.BooleanField(
+        default=False,
+        help_text=(
+            "Require this active target to have a schedule. Missing schedules are "
+            "rejected on save and reported as unhealthy if configuration drift "
+            "bypasses validation."
+        ),
+    )
 
     # Status and settings
     status = models.CharField(
@@ -160,6 +173,29 @@ class BackupTarget(models.Model):
 
         errors = {}
 
+        # Once enabled, the schedule contract may only be cleared as part of
+        # explicit retirement. This prevents an active/paused Tier 1 target
+        # from becoming silently manual-only through ordinary Admin saves.
+        if self.pk and not self.schedule_required:
+            persisted_contract = (
+                type(self).objects.filter(pk=self.pk)
+                .values_list("schedule_required", "status")
+                .first()
+            )
+            if (
+                persisted_contract
+                and persisted_contract[0]
+                and (
+                    persisted_contract[1]
+                    in BackupStatus.schedule_contract_observed_values()
+                    or self.status in BackupStatus.schedule_contract_observed_values()
+                )
+            ):
+                errors["schedule_required"] = (
+                    "To remove the contract, save the target as disabled first, "
+                    "then clear this flag in a separate save."
+                )
+
         # Normalize service_token (strip whitespace)
         if self.service_token:
             self.service_token = self.service_token.strip()
@@ -185,7 +221,13 @@ class BackupTarget(models.Model):
         else:
             self.backup_files = result.value
 
-        # Validate schedule
+        # Validate schedule contract and cron expression
+        if (
+            self.status == BackupStatus.ACTIVE
+            and self.schedule_required
+            and not self.schedule
+        ):
+            errors["schedule"] = "A schedule is required for this backup target."
         if self.schedule:
             result = validate_schedule(self.schedule)
             if not result.is_valid:

@@ -117,6 +117,11 @@ Or use Justfile shortcuts: `just backup <target>`, `just devdata`
 | **MinIO upload failed** | Check `mc alias` configuration and bucket permissions |
 | **Restore blocked** | Restore requires valid checksum. Re-run backup if checksum missing |
 | **Scheduled backups not running** | Check cron/service logs at `/home/echoport/logs/scheduler.log` |
+| **Health reports `missing_schedule`** | A target marked `schedule_required` lost its cron schedule; restore the declared target configuration |
+| **Required target reports `invalid_schedule`** | Its cron expression is malformed and overall health is `unhealthy`; restore a valid declared schedule |
+| **Health reports `paused_required`** | Resume the target; planned pauses require an acknowledged monitor maintenance window. For permanent removal follow the [reviewed retirement procedure](docs/adding-backup-targets.md#reviewed-retirement-procedure) |
+| **Health reports `inactive_required`** | A future non-disabled lifecycle state prevents scheduled operation; inspect `target_status`, restore the active declared state, and update monitoring/runbooks for that lifecycle state |
+| **Required target reports `last_failed`** | Trigger a manual backup after fixing the cause; health returns from `unhealthy` only after a successful run |
 | **Permission denied** | Verify backup script is root-owned, check sudoers config |
 
 ## Limitations

@@ -10,7 +10,7 @@ from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.db import close_old_connections, transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -411,13 +411,23 @@ def health_status(request):
     Security: Does not expose error messages (may contain paths/tokens).
     """
     now = timezone.now()
-    targets = BackupTarget.objects.filter(status=BackupStatus.ACTIVE)
+    targets = BackupTarget.objects.filter(
+        Q(status=BackupStatus.ACTIVE)
+        | Q(
+            status__in=BackupStatus.schedule_contract_observed_values(),
+            schedule_required=True,
+        )
+    )
 
     target_statuses = []
     recent_failures = []
     any_overdue = False
     any_failures = False
     any_invalid_schedule = False
+    any_invalid_required_schedule = False
+    any_missing_required_schedule = False
+    any_required_lifecycle_violation = False
+    any_required_last_failure = False
 
     for target in targets:
         last_success = target.get_last_successful_run()
@@ -428,8 +438,20 @@ def health_status(request):
         overdue = False
         overdue_hours = None
         invalid_schedule = False
+        inactive_required = (
+            target.status != BackupStatus.ACTIVE and target.schedule_required
+        )
+        missing_required_schedule = (
+            target.schedule_required
+            and not target.schedule
+            and not inactive_required
+        )
 
-        if target.schedule:
+        if inactive_required:
+            any_required_lifecycle_violation = True
+        if missing_required_schedule:
+            any_missing_required_schedule = True
+        if not inactive_required and target.schedule:
             try:
                 cron = croniter(target.schedule, now)
                 next_scheduled_dt = cron.get_next(datetime)
@@ -457,26 +479,41 @@ def health_status(request):
                 # Invalid cron expression - surface this to operators
                 invalid_schedule = True
                 any_invalid_schedule = True
+                if target.schedule_required:
+                    any_invalid_required_schedule = True
 
-        # Determine target status (order matters: overdue > invalid > failed/timeout > ok)
-        if overdue:
+        # Determine target status (order matters: contract > overdue > invalid > failure > ok)
+        if inactive_required:
+            status = (
+                "paused_required"
+                if target.status == BackupStatus.PAUSED
+                else "inactive_required"
+            )
+        elif missing_required_schedule:
+            status = "missing_schedule"
+        elif overdue:
             status = "overdue"
         elif invalid_schedule:
             status = "invalid_schedule"
         elif last_run and last_run.status in [BackupRunStatus.FAILED, BackupRunStatus.TIMEOUT]:
             status = "last_failed"
             any_failures = True
+            if target.schedule_required:
+                any_required_last_failure = True
         else:
             status = "ok"
 
         target_info = {
             "name": target.name,
             "status": status,
+            "target_status": target.status,
             "last_successful_backup": (
                 last_success.started_at.isoformat() if last_success else None
             ),
             "next_scheduled": next_scheduled.isoformat() if next_scheduled else None,
             "overdue": overdue,
+            "schedule": target.schedule,
+            "schedule_required": target.schedule_required,
         }
         if overdue_hours is not None:
             target_info["overdue_hours"] = overdue_hours
@@ -485,10 +522,13 @@ def health_status(request):
 
         # Collect recent failures (last 7 days)
         # Security: Only expose status and timestamp, not error messages
-        failed_runs = target.runs.filter(
-            status__in=[BackupRunStatus.FAILED, BackupRunStatus.TIMEOUT],
-            started_at__gte=now - timezone.timedelta(days=7),
-        ).order_by("-started_at")[:5]
+        if inactive_required:
+            failed_runs = []
+        else:
+            failed_runs = target.runs.filter(
+                status__in=[BackupRunStatus.FAILED, BackupRunStatus.TIMEOUT],
+                started_at__gte=now - timezone.timedelta(days=7),
+            ).order_by("-started_at")[:5]
 
         for run in failed_runs:
             any_failures = True
@@ -499,10 +539,16 @@ def health_status(request):
             })
 
     # Determine overall status
-    # unhealthy = overdue backups (data at risk)
+    # unhealthy = required target contract/failure or overdue backups (data at risk)
     # degraded = recent failures or invalid schedules (needs attention)
     # healthy = all good
-    if any_overdue:
+    if (
+        any_missing_required_schedule
+        or any_required_lifecycle_violation
+        or any_invalid_required_schedule
+        or any_required_last_failure
+        or any_overdue
+    ):
         overall_status = "unhealthy"
     elif any_failures or any_invalid_schedule:
         overall_status = "degraded"

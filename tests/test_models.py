@@ -2,11 +2,16 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
-from backups.models import BackupRun, BackupRunStatus, BackupTarget
+from backups.models import BackupRun, BackupRunStatus, BackupStatus, BackupTarget
 
 
 @pytest.mark.django_db
 class TestBackupTarget:
+    def test_every_non_disabled_status_keeps_required_contract_observable(self):
+        observed = set(BackupStatus.schedule_contract_observed_values())
+
+        assert observed == set(BackupStatus.values) - {BackupStatus.DISABLED}
+
     def test_create_target(self):
         target = BackupTarget.objects.create(
             name="nyxmon",

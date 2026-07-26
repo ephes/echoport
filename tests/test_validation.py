@@ -479,6 +479,205 @@ class TestModelValidation:
             target.save()
         assert "schedule" in exc_info.value.message_dict
 
+    def test_required_schedule_rejected_when_blank(self):
+        """Model save() should enforce the required-schedule contract."""
+        from django.core.exceptions import ValidationError
+        from backups.models import BackupTarget
+
+        target = BackupTarget(
+            name="required-schedule",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="",
+            schedule_required=True,
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            target.save()
+        assert exc_info.value.message_dict["schedule"] == [
+            "A schedule is required for this backup target."
+        ]
+
+    def test_required_schedule_accepts_valid_cron(self):
+        """An active target may opt into the required-schedule contract."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="required-valid-schedule",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="0 2 * * *",
+            schedule_required=True,
+        )
+        assert target.schedule_required is True
+
+    def test_manual_only_target_accepts_blank_schedule(self):
+        """Manual-only targets remain supported when the contract is disabled."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="manual-only",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="",
+            schedule_required=False,
+        )
+        assert target.schedule == ""
+
+    def test_disabled_required_target_can_clear_schedule(self):
+        """Retiring a target may clear its schedule without changing the audit flag."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="retired-required-target",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="0 2 * * *",
+            schedule_required=True,
+        )
+        target.status = "disabled"
+        target.save()
+        target.schedule = ""
+        target.save()
+
+        target.refresh_from_db()
+        assert target.status == "disabled"
+        assert target.schedule == ""
+        assert target.schedule_required is True
+
+    def test_disabled_required_target_cannot_reactivate_without_schedule(self):
+        """Reactivation restores the active required-schedule guard."""
+        from django.core.exceptions import ValidationError
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="reactivated-required-target",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="",
+            schedule_required=True,
+            status="disabled",
+        )
+        target.status = "active"
+
+        with pytest.raises(ValidationError) as exc_info:
+            target.save()
+        assert exc_info.value.message_dict["schedule"] == [
+            "A schedule is required for this backup target."
+        ]
+
+    def test_active_required_target_cannot_clear_contract(self):
+        """Ordinary saves cannot silently turn a Tier 1 target manual-only."""
+        from django.core.exceptions import ValidationError
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="required-contract",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="0 2 * * *",
+            schedule_required=True,
+        )
+        target.schedule_required = False
+
+        with pytest.raises(ValidationError) as exc_info:
+            target.save()
+        assert exc_info.value.message_dict["schedule_required"] == [
+            "To remove the contract, save the target as disabled first, then "
+            "clear this flag in a separate save."
+        ]
+
+    def test_paused_required_target_cannot_clear_contract(self):
+        """Pausing cannot bypass contract immutability."""
+        from django.core.exceptions import ValidationError
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="paused-required-contract",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="0 2 * * *",
+            schedule_required=True,
+            status="paused",
+        )
+        target.schedule_required = False
+
+        with pytest.raises(ValidationError) as exc_info:
+            target.save()
+        assert "schedule_required" in exc_info.value.message_dict
+
+    def test_disabled_contract_cannot_be_cleared_during_reactivation(self):
+        """Contract removal and reactivation require separate reviewed saves."""
+        from django.core.exceptions import ValidationError
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="reactivate-and-clear-contract",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="0 2 * * *",
+            schedule_required=True,
+        )
+        target.status = "disabled"
+        target.save()
+
+        target.status = "active"
+        target.schedule_required = False
+        with pytest.raises(ValidationError) as exc_info:
+            target.save()
+        assert "schedule_required" in exc_info.value.message_dict
+
+    def test_contract_cannot_be_cleared_in_same_save_that_disables_target(self):
+        """Retirement must persist the disabled state before dropping the contract."""
+        from django.core.exceptions import ValidationError
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="retire-required-contract",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="0 2 * * *",
+            schedule_required=True,
+        )
+        target.status = "disabled"
+        target.schedule = ""
+        target.schedule_required = False
+
+        with pytest.raises(ValidationError) as exc_info:
+            target.save()
+        assert "schedule_required" in exc_info.value.message_dict
+
+    def test_disabled_target_can_clear_required_contract_in_second_save(self):
+        """Reviewed retirement can remove the contract after disabling."""
+        from backups.models import BackupTarget
+
+        target = BackupTarget.objects.create(
+            name="retire-required-contract-second-save",
+            fastdeploy_service="test-service",
+            service_name="test.service",
+            db_path="/home/test/db.sqlite3",
+            schedule="0 2 * * *",
+            schedule_required=True,
+        )
+        target.status = "disabled"
+        target.save()
+        target.schedule = ""
+        target.schedule_required = False
+        target.save()
+
+        target.refresh_from_db()
+        assert target.status == "disabled"
+        assert target.schedule == ""
+        assert target.schedule_required is False
+
     @override_settings(FASTDEPLOY_ENDPOINTS={})
     def test_invalid_endpoint_key_rejected_on_save(self):
         """Model save() should reject invalid endpoint key."""

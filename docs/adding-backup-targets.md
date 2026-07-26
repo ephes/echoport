@@ -6,7 +6,8 @@ Concise operator guide for configuring new backup targets in Django Admin.
 
 1. Open Django Admin and go to `Backup Targets` -> `Add`.
 2. Set `Target mode` (`generic_paths` or `service_owned`) and fill minimal fields for that mode.
-3. Optionally set a `Schedule` and adjust retention/timeout.
+3. Set a `Schedule` and enable `Schedule required` for targets that must run
+   automatically. Leave both unset only for intentionally manual targets.
 4. Save.
 
 For remote targets (services on other hosts), see "Adding a Remote Backup Target" below — you cannot just add a BackupTarget in Admin.
@@ -30,6 +31,20 @@ Read this before entering values to avoid validation errors.
 - All paths must be absolute and under the allowlist `ECHOPORT_ALLOWED_PATH_PREFIXES` (default: `/home/`, `/opt/`, `/var/lib/`, `/mnt/cryptdata/`). Paths outside the allowlist are rejected.
 - `Backup files` must be a list of paths; in Admin you enter one path per line. For remote targets, each entry must be a directory (not an individual file) — the remote backup script validates this and fails with a clear error otherwise.
 - `Schedule` must be a valid cron expression; leave blank for no scheduled runs.
+- `Schedule required` rejects a blank schedule while a target is active. If
+  direct database changes bypass validation, the health endpoint reports the
+  active target as `missing_schedule` and the overall service as `unhealthy`.
+- An invalid cron on a target with `Schedule required` also makes overall
+  health `unhealthy`; the target status remains `invalid_schedule`.
+- The save-time schedule contract is enforced while the target is active. A
+  paused required target may be edited, but remains visible as
+  `paused_required` and makes health unhealthy. Use disabled—not paused—for
+  intentional retirement. A disabled target may clear its schedule while
+  retaining the flag as audit history; re-enabling it without restoring a
+  valid schedule is rejected.
+- Once enabled, `Schedule required` cannot be unchecked on an active or paused
+  target through normal model/Admin saves. Disable the target first as part of
+  the reviewed retirement procedure.
 - `FastDeploy endpoint key` must match a key in `FASTDEPLOY_ENDPOINTS`. The endpoint must have `base_url` and a resolvable token: either a `token` (default), a matching `service_tokens[fastdeploy_service]` entry, or a `Service token` set on the target. Leave blank to use the default FastDeploy endpoint.
 - `Service token` overrides all other token sources. If set, the endpoint only needs `base_url` (no `token` or `service_tokens` required).
 - Deletion is blocked in Admin. Use `Status = Disabled` to retire a target.
@@ -51,11 +66,124 @@ Read this before entering values to avoid validation errors.
 | Database path | Text | No | Blank | Absolute path under allowlist, max 500 chars. Required for `generic_paths` only when `Backup files` is empty. | `/home/nyxmon/data/db.sqlite3` |
 | Backup files | List (one path per line) | No | Empty list | Absolute paths under allowlist. Required for `generic_paths` only when `Database path` is empty. Remote targets: must be directories. | `/home/nyxmon/uploads` |
 | Schedule | Text | No | Blank | Valid cron expression, max 100 chars | `0 2 * * *` |
+| Schedule required | Boolean | No | `False` | Enable for targets that must never become manual-only | `True` |
 | Retention days | Integer | No | `30` | Days to keep backups | `14` |
 | Timeout seconds | Integer | No | `600` | Max time to wait for backup | `900` |
 | Storage bucket | Text | No | `backups` | MinIO bucket name, max 100 chars | `backups` |
 | Created at | Timestamp | Read-only | Auto | Audit field | (auto) |
 | Updated at | Timestamp | Read-only | Auto | Audit field | (auto) |
+
+## Health Response Contract
+
+For each active target, plus each paused target with
+`schedule_required=true`, `/api/health/` includes the lifecycle field
+`target_status`, `schedule`, `schedule_required`, and one of the computed
+health statuses `ok`, `overdue`, `missing_schedule`, `paused_required`,
+`invalid_schedule`, or `last_failed`. `inactive_required` is reserved for a
+future non-disabled, non-active lifecycle state and cannot be emitted by the
+current three-state model. Consumers must use `target_status` rather than
+assume every listed target is active. Any future non-disabled lifecycle state
+automatically remains visible when the schedule contract is required; only
+`disabled` is treated as retirement.
+
+- `missing_schedule` is always unhealthy because it can only occur for a
+  required target.
+- `invalid_schedule` is unhealthy for required targets and degraded for
+  intentionally optional/manual targets.
+- `paused_required` is unhealthy. Paused optional and disabled targets are
+  absent. Paused required targets have no `next_scheduled` and are not marked
+  overdue, because no run can occur until they are resumed. Their historical
+  failures are also suppressed from `recent_failures` so the lifecycle
+  violation is the sole reported reason; inspect run history before deciding
+  to resume.
+- A latest failed/timeout run is unhealthy for required targets. Historical
+  failures followed by success remain a degraded audit signal.
+- Monitoring for a declared Tier 1 target must require four named
+  assertions: `targets_by_name.<name>.status == "ok"`,
+  `targets_by_name.<name>.next_scheduled != null`, and
+  `targets_by_name.<name>.schedule_required == true`, plus
+  `targets_by_name.<name>.schedule == "<declared cron>"`. The exact cadence
+  assertion detects a valid but widened cron; the others detect a missing,
+  deleted, disabled, contract-cleared, or unscheduled row even when generic
+  overall health cannot infer that the target was expected.
+  Retiring such a target therefore requires removing its declarative target
+  and named monitoring assertion in the same reviewed operations change;
+  merely disabling it intentionally leaves that expected-target monitor red.
+
+The production Nyxmon evaluator's absent-key behavior was exercised on
+2026-07-26 by substituting a nonexistent target name into a copy of the live
+four-check configuration while polling the live Echoport response. All four
+paths resolved to null, all four critical assertions failed, and the evaluator
+returned `error`/`threshold_failed`. The live check itself was not modified.
+
+### Changing an approved schedule
+
+1. Change the declarative target schedule and the exact named-monitor
+   assertion in the same reviewed ops-control change.
+2. Deploy the registration playbook so it applies both values together.
+3. Verify the named row reports the new `schedule` and non-null
+   `next_scheduled`, then verify Nyxmon is green. Never loosen the exact
+   assertion merely to accommodate an unreviewed cadence change.
+
+### Reviewed retirement procedure
+
+1. Prepare and review the ops-control change that retires the declarative
+   target registration and its named monitoring assertions; do not deploy it
+   yet. Freeze all target registration runs and keep them frozen until that
+   ops-control change is deployed in step 4.
+2. In one save, set the target to `disabled`. The named monitor turning red is
+   expected and must remain acknowledged during this short window.
+3. In a separate save, clear `schedule_required` and the schedule while the
+   target remains disabled.
+4. Deploy the prepared ops-control change so automation cannot reactivate the
+   target, then verify the replacement/retirement monitoring state. Retain
+   backup artifacts according to the applicable retention decision.
+
+When introducing the field to the current deployment, deploy Echoport to apply
+the schema migration, then, from the ops-control checkout, immediately run
+`just register-vaultwarden-backup`, then verify the named Nyxmon monitor. The
+field defaults false so existing
+intentional manual-only targets do not become scheduled by an application
+migration. A failed or skipped upsert must leave the named monitor red and
+block completion of the rollout.
+
+Rollback order is: first freeze registration runs and deploy the reviewed
+ops-control rollback that removes/holds both the Vaultwarden target declaration
+and its named monitoring assertions; then deploy reverted model/view/admin code
+while intentionally retaining migration file
+`0008_backuptarget_schedule_required` in that revert commit (or copy the file
+into the deployed tree before migration); then run
+`migrate backups 0007` to drop the now-unused column; and only then remove the
+migration file. Keep registration frozen until the ops-control rollback is
+deployed; otherwise its direct model assignment can appear to succeed after
+the field is gone without persisting a contract. Never run old application code
+before the column exists, or new application code after it is dropped.
+Reversing the migration permanently discards active and retired-target audit
+flags; take/verify the Echoport database backup and record affected targets
+before doing so. Also freeze target creation while old code runs against the
+still-present 0008 column: old INSERTs omit its required value and fail. After
+reversing to 0007, do not run any deploy or automatic `migrate` until migration
+file 0008 has been removed, or Django will reapply it.
+
+The application health view is intentionally unauthenticated for monitoring,
+so deployments must bind the application port to loopback and put any ingress
+behind authentication. The production ops-control deployment asserts
+`echoport_app_host=127.0.0.1`, and the Vaultwarden Nyxmon check polls that
+loopback listener. Do not expose the application port directly to an untrusted
+network; the response includes target names, lifecycle state, backup
+timestamps, and declared cron expressions.
+
+The save-time contract is an application plus monitoring invariant rather than
+a database check constraint. Out-of-band `QuerySet.update()`, fixture loading,
+and direct SQL are prohibited for target configuration; they can bypass
+`clean()`. The health response and named fail-closed monitor deliberately retain
+drift states so restored legacy databases or unauthorized writes become
+visible instead of being mistaken for healthy configuration.
+
+Required targets are not silently pausable. For planned maintenance, establish
+an acknowledged monitoring maintenance window first; pausing the target then
+intentionally reports `paused_required`/unhealthy until it is resumed. Disabled
+means retirement, not temporary maintenance.
 
 ## Common Configurations
 
