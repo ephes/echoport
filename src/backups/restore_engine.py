@@ -31,11 +31,22 @@ from .models import (
     RestoreTrigger,
 )
 
+from .run_reaper import reap_stale, save_if_still_active
+
+ACTIVE_RESTORE_STATUSES = [RestoreRunStatus.PENDING, RestoreRunStatus.RUNNING]
+
+
 # Import lazily to avoid circular imports
 def _get_active_backup(target: BackupTarget):
     """Check if a backup is running for this target."""
     from .backup_engine import get_active_run
     return get_active_run(target)
+
+
+def _reap_stale_backups(target: BackupTarget) -> list[int]:
+    """Reap stale backup runs for this target (they would block the restore)."""
+    from .backup_engine import reap_stale_runs as reap_stale_backup_runs
+    return reap_stale_backup_runs(target=target)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +112,11 @@ def start_restore(
     close_old_connections()
 
     target = backup_run.target
+
+    # Runs left active by a killed process would block this target forever;
+    # reap them before checking for concurrent operations.
+    reap_stale_runs(target=target, exclude_ids=[existing_run.pk] if existing_run else ())
+    _reap_stale_backups(target)
 
     # Helper to mark existing_run as failed if preconditions fail
     def _fail_existing_run_and_raise(error: Exception) -> None:
@@ -204,14 +220,29 @@ def start_restore(
             base_url=fd_config.get("base_url"),
             service_token=fd_config.get("token"),
         ) as client:
+            # Claim the run (PENDING -> RUNNING) before launching anything.
+            # If it was reaped as stale meanwhile (e.g. this worker was paused),
+            # another operation may already own the target: do not deploy.
+            run.status = RestoreRunStatus.RUNNING
+            if not save_if_still_active(
+                run, [RestoreRunStatus.PENDING], ["status"], insert_if_missing=False
+            ):
+                raise RestoreError(
+                    f"Restore run {run.id} is no longer pending (status '{run.status}'); "
+                    f"not starting a deployment"
+                )
+
             try:
                 deployment_id = client.start_deployment(
                     target.fastdeploy_service,
                     context,
                 )
                 run.fastdeploy_deployment_id = deployment_id
-                run.status = RestoreRunStatus.RUNNING
-                run.save(update_fields=["fastdeploy_deployment_id", "status"])
+                if not save_if_still_active(run, ACTIVE_RESTORE_STATUSES, ["fastdeploy_deployment_id"]):
+                    raise RestoreError(
+                        f"Restore run {run.id} was finalized (status '{run.status}') while "
+                        f"deployment {deployment_id} was starting; not tracking it"
+                    )
 
             except DeploymentStartError as e:
                 logger.error(f"Failed to start deployment: {e}")
@@ -343,8 +374,13 @@ def _handle_deployment_finished(
     except Exception:
         pass
 
-    run.save()
+    # Never overwrite a run that was reaped as stale meanwhile.
+    save_if_still_active(run, ACTIVE_RESTORE_STATUSES, _FINAL_FIELDS)
     return run
+
+
+# Fields written when a restore run reaches a final state.
+_FINAL_FIELDS = ["status", "logs", "files_restored", "error_message", "finished_at"]
 
 
 def _collect_step_logs(steps: list[dict]) -> str:
@@ -365,7 +401,7 @@ def _mark_run_failed(run: RestoreRun, error_message: str) -> None:
     run.status = RestoreRunStatus.FAILED
     run.error_message = error_message
     run.finished_at = timezone.now()
-    run.save()
+    save_if_still_active(run, ACTIVE_RESTORE_STATUSES, ["status", "error_message", "finished_at"])
 
 
 def _mark_run_timeout(run: RestoreRun) -> None:
@@ -373,11 +409,26 @@ def _mark_run_timeout(run: RestoreRun) -> None:
     run.status = RestoreRunStatus.TIMEOUT
     run.error_message = f"Restore timed out after {run.target.timeout_seconds} seconds"
     run.finished_at = timezone.now()
-    run.save()
+    save_if_still_active(run, ACTIVE_RESTORE_STATUSES, ["status", "error_message", "finished_at"])
 
 
 def get_active_restore(target: BackupTarget) -> RestoreRun | None:
     """Get the currently active restore run for a target, if any."""
-    return target.restore_runs.filter(
-        status__in=[RestoreRunStatus.PENDING, RestoreRunStatus.RUNNING]
-    ).first()
+    return target.restore_runs.filter(status__in=ACTIVE_RESTORE_STATUSES).first()
+
+
+def reap_stale_runs(target: BackupTarget | None = None, now=None, exclude_ids=()) -> list[int]:
+    """
+    Mark restore runs left PENDING/RUNNING by a killed process as TIMEOUT.
+
+    See ``backups.run_reaper`` for the staleness rule. Returns reaped run ids.
+    """
+    return reap_stale(
+        RestoreRun,
+        ACTIVE_RESTORE_STATUSES,
+        RestoreRunStatus.TIMEOUT,
+        "restore",
+        target=target,
+        now=now,
+        exclude_ids=exclude_ids,
+    )

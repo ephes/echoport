@@ -7,6 +7,12 @@ for any that are due.
 
 Usage:
     python manage.py run_scheduled_backups
+    python manage.py run_scheduled_backups --reap-only
+
+Every non-dry-run pass first reaps stale runs: backup/restore runs left
+pending/running by a killed process (older than the target timeout plus
+ECHOPORT_STALE_RUN_GRACE_SECONDS) are marked as timed out so they stop
+blocking their target. --reap-only does just that and exits.
 
 The command uses a file lock to prevent overlapping instances.
 """
@@ -30,6 +36,7 @@ from backups.backup_engine import (
     start_backup,
 )
 from backups.models import BackupRunStatus, BackupStatus, BackupTarget, BackupTrigger
+from backups.run_reaper import reap_all_stale_runs
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +65,18 @@ class Command(BaseCommand):
             action="store_true",
             help="Show what would be run without actually running backups",
         )
+        parser.add_argument(
+            "--reap-only",
+            action="store_true",
+            help="Only mark stale pending/running backup and restore runs as timed out, then exit",
+        )
 
     def handle(self, *args, **options):
         dry_run = options["dry_run"]
+        reap_only = options.get("reap_only", False)
+        if dry_run and reap_only:
+            self.stderr.write(self.style.ERROR("--dry-run and --reap-only cannot be combined"))
+            sys.exit(2)
 
         # Acquire lock to prevent overlapping instances
         if not dry_run:
@@ -81,6 +97,10 @@ class Command(BaseCommand):
             lock_file = None
 
         try:
+            if not dry_run:
+                self._reap_stale_runs()
+            if reap_only:
+                sys.exit(0)
             exit_code = self._run_scheduler(dry_run)
             sys.exit(exit_code)
         finally:
@@ -131,6 +151,17 @@ class Command(BaseCommand):
             lock_file.close()
         except (OSError, IOError):
             pass
+
+    def _reap_stale_runs(self) -> None:
+        """Mark runs orphaned by a killed process as timed out."""
+        backups, restores = reap_all_stale_runs()
+        if backups or restores:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Reaped stale runs: {len(backups)} backup(s) {backups}, "
+                    f"{len(restores)} restore(s) {restores}"
+                )
+            )
 
     def _run_scheduler(self, dry_run: bool) -> int:
         """

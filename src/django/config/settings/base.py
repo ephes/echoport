@@ -164,6 +164,11 @@ FASTDEPLOY_SERVICE_TOKEN = env("FASTDEPLOY_SERVICE_TOKEN", default="")
 FASTDEPLOY_POLL_INTERVAL = 5  # seconds
 FASTDEPLOY_DEFAULT_TIMEOUT = 600  # seconds (10 minutes)
 
+# A backup/restore run still pending/running this long after its target's
+# timeout_seconds is treated as orphaned by a killed process and reaped
+# (marked timeout) so it no longer blocks the target.
+ECHOPORT_STALE_RUN_GRACE_SECONDS = env.int("ECHOPORT_STALE_RUN_GRACE_SECONDS", default=900)
+
 # Per-target FastDeploy endpoints (keyed by endpoint name)
 # Maps endpoint_key -> {"base_url": "...", "token": "...", "service_tokens": {...}}
 # Tokens should be loaded from env vars (SOPS-backed in production).
