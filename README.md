@@ -109,6 +109,15 @@ Run via: `cd src/django && uv run python manage.py <command>`
 
 Or use Justfile shortcuts: `just backup <target>`, `just devdata`
 
+## Tests
+
+Run `just test` (or `.venv/bin/pytest`); `just check` adds lint and type checking.
+Tests never contact FastDeploy: the `fake_fastdeploy` fixture in `tests/conftest.py`
+replaces the client in both engines with a scripted fake (deployment id or start
+error, a sequence of statuses or poll errors) and records poll sleeps instead of
+sleeping. View tests replace `threading.Thread` and capture `on_commit` callbacks,
+so no background backup or restore thread is started.
+
 ## Troubleshooting
 
 | Problem | Solution |
