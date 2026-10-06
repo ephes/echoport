@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load backup_tags %}
 
 {% block title %}{{ target.name }} - Echoport{% endblock %}
 
@@ -41,7 +42,7 @@
             {% endif %}
 
             <dt>Schedule</dt>
-            <dd>{% if target.schedule %}<code>{{ target.schedule }}</code>{% else %}Not scheduled{% endif %}</dd>
+            <dd>{% if target.schedule %}<code>{{ target.schedule }}</code> UTC{% next_scheduled_run target as next_run %}{% if next_run %} <span class="next-run">(next: {{ next_run|date:"M j, H:i T" }})</span>{% endif %}{% else %}Not scheduled{% endif %}</dd>
 
             <dt>Retention</dt>
             <dd>{{ target.retention_days }} days</dd>

@@ -133,7 +133,7 @@ class BackupTarget(models.Model):
     schedule = models.CharField(
         max_length=100,
         blank=True,
-        help_text="Cron schedule expression (e.g., '0 2 * * *' for 2am daily)",
+        help_text="Cron expression in UTC (e.g. '0 2 * * *' = 02:00 UTC daily)",
     )
     schedule_required = models.BooleanField(
         default=False,

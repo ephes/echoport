@@ -50,10 +50,10 @@
         {% if target.schedule %}
         <div class="schedule">
             <span class="label">Schedule:</span>
-            <code>{{ target.schedule }}</code>
+            <code>{{ target.schedule }}</code> UTC
             {% next_scheduled_run target as next_run %}
             {% if next_run %}
-            <span class="next-run">(next: {{ next_run|date:"M j, H:i" }})</span>
+            <span class="next-run">(next: {{ next_run|date:"M j, H:i T" }})</span>
             {% endif %}
         </div>
         {% endif %}
