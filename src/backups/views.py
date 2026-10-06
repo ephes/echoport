@@ -5,10 +5,11 @@ Views for Echoport backup dashboard.
 import logging
 import shlex
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 from django.contrib.admin.views.decorators import staff_member_required
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.db import close_old_connections, transaction
 from django.db.models import Prefetch, Q
@@ -410,6 +411,35 @@ def restore_status(request, restore_id):
     return response
 
 
+def _health_overdue_grace_minutes() -> int:
+    """Grace window after a cron time before a missing run counts as overdue."""
+    try:
+        minutes = int(getattr(settings, "ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES", 60))
+    except (TypeError, ValueError):
+        minutes = 60
+    return max(0, minutes)
+
+
+def _run_in_progress_for_cycle(
+    active_run: BackupRun | None,
+    target: BackupTarget,
+    prev_scheduled: datetime,
+    now: datetime,
+    grace: timedelta,
+) -> bool:
+    """
+    Whether a pending/running run is covering the current scheduled cycle.
+
+    Only a run that started at or after the previous cron time counts, and only
+    for a bounded time (the target's run timeout plus the grace window) so a
+    stuck run row cannot hide a real miss indefinitely.
+    """
+    if active_run is None or active_run.started_at < prev_scheduled:
+        return False
+    limit = timedelta(seconds=target.timeout_seconds) + grace
+    return now < active_run.started_at + limit
+
+
 def health_status(request):
     """
     Public JSON endpoint for monitoring systems (e.g., NyxMon).
@@ -420,12 +450,17 @@ def health_status(request):
     Security: Does not expose error messages (may contain paths/tokens).
     """
     now = timezone.now()
+    overdue_grace = timedelta(minutes=_health_overdue_grace_minutes())
+    # Prefetch runs newest-first so per-target lookups below are in-memory
+    # (same pattern as the dashboard) instead of several queries per target.
     targets = BackupTarget.objects.filter(
         Q(status=BackupStatus.ACTIVE)
         | Q(
             status__in=BackupStatus.schedule_contract_observed_values(),
             schedule_required=True,
         )
+    ).prefetch_related(
+        Prefetch("runs", queryset=BackupRun.objects.order_by("-started_at"))
     )
 
     target_statuses = []
@@ -439,13 +474,25 @@ def health_status(request):
     any_required_last_failure = False
 
     for target in targets:
-        last_success = target.get_last_successful_run()
-        last_run = target.get_last_run()
+        runs = list(target.runs.all())  # Prefetched, newest first
+        last_run = runs[0] if runs else None
+        last_success = next(
+            (r for r in runs if r.status == BackupRunStatus.SUCCESS), None
+        )
+        active_run = next(
+            (
+                r
+                for r in runs
+                if r.status in (BackupRunStatus.PENDING, BackupRunStatus.RUNNING)
+            ),
+            None,
+        )
 
         # Calculate next scheduled time and overdue status
         next_scheduled = None
         overdue = False
         overdue_hours = None
+        grace_until = None
         invalid_schedule = False
         inactive_required = (
             target.status != BackupStatus.ACTIVE and target.schedule_required
@@ -475,15 +522,41 @@ def health_status(request):
                 if timezone.is_naive(prev_scheduled):
                     prev_scheduled = timezone.make_aware(prev_scheduled)
 
-                if last_success:
-                    if last_success.started_at < prev_scheduled:
-                        overdue = True
-                        overdue_hours = round((now - prev_scheduled).total_seconds() / 3600, 1)
-                        any_overdue = True
-                else:
-                    # No successful backup ever - considered overdue if scheduled
+                # The latest scheduled run is satisfied by a success that
+                # started at or after the previous cron time. Otherwise the
+                # deadline is the first cron time after the last success plus
+                # the grace window; the scheduler runs due targets one after
+                # another, so a run may legitimately start (or finish) well
+                # after the cron minute. Anchoring on the first missed cycle
+                # (not the latest one) keeps grace from being renewed at every
+                # cron tick for frequent schedules. A target that never
+                # succeeded stays overdue, as before.
+                if last_success is None:
                     overdue = True
                     any_overdue = True
+                elif last_success.started_at < prev_scheduled:
+                    first_missed = croniter(
+                        target.schedule, last_success.started_at
+                    ).get_next(datetime)
+                    if timezone.is_naive(first_missed):
+                        first_missed = timezone.make_aware(first_missed)
+                    deadline = first_missed + overdue_grace
+                    # An in-progress run covers only the current cycle; if an
+                    # earlier cycle was already missed it does not help.
+                    in_progress = (
+                        first_missed >= prev_scheduled
+                        and _run_in_progress_for_cycle(
+                            active_run, target, prev_scheduled, now, overdue_grace
+                        )
+                    )
+                    if now < deadline:
+                        grace_until = deadline
+                    elif not in_progress:
+                        overdue = True
+                        any_overdue = True
+                        overdue_hours = round(
+                            (now - deadline).total_seconds() / 3600, 1
+                        )
             except (KeyError, ValueError, CroniterBadCronError, CroniterBadDateError):
                 # Invalid cron expression - surface this to operators
                 invalid_schedule = True
@@ -521,6 +594,8 @@ def health_status(request):
             ),
             "next_scheduled": next_scheduled.isoformat() if next_scheduled else None,
             "overdue": overdue,
+            "active_run": active_run is not None,
+            "grace_until": grace_until.isoformat() if grace_until else None,
             "schedule": target.schedule,
             "schedule_required": target.schedule_required,
         }
@@ -534,10 +609,13 @@ def health_status(request):
         if inactive_required:
             failed_runs = []
         else:
-            failed_runs = target.runs.filter(
-                status__in=[BackupRunStatus.FAILED, BackupRunStatus.TIMEOUT],
-                started_at__gte=now - timezone.timedelta(days=7),
-            ).order_by("-started_at")[:5]
+            failure_cutoff = now - timedelta(days=7)
+            failed_runs = [
+                r
+                for r in runs
+                if r.status in (BackupRunStatus.FAILED, BackupRunStatus.TIMEOUT)
+                and r.started_at >= failure_cutoff
+            ][:5]
 
         for run in failed_runs:
             any_failures = True

@@ -96,6 +96,22 @@ automatically remains visible when the schedule contract is required; only
   failures are also suppressed from `recent_failures` so the lifecycle
   violation is the sole reported reason; inspect run history before deciding
   to resume.
+- `overdue` means no successful run started at or after the previous cron
+  time and the missed cycle is no longer covered. The deadline is the first
+  cron time after the last success plus the grace window
+  (`ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES`, default 60), so later cron ticks
+  never renew the grace for frequent schedules. Past that deadline a
+  pending/running run still covers the cycle when only the current cycle is
+  missing and the run started at or after the previous cron time, but only for
+  the target's `timeout_seconds` plus the grace window, so a stuck run row
+  cannot hide a missed backup. The scheduler runs due targets one after
+  another, which is why later targets start after the cron minute. A
+  scheduled target that never succeeded is always `overdue`. `overdue_hours`
+  is measured from the deadline. Each target also reports `active_run` (a
+  pending/running run exists) and `grace_until` (ISO deadline while the missed
+  cycle is still inside its grace window, otherwise `null`); the target
+  `status` stays `ok` in both cases, so named `status == "ok"` assertions do
+  not flap during scheduled backups.
 - A latest failed/timeout run is unhealthy for required targets. Historical
   failures followed by success remain a degraded audit signal.
 - Monitoring for a declared Tier 1 target must require four named
