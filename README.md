@@ -122,6 +122,9 @@ Or use Justfile shortcuts: `just backup <target>`, `just devdata`
 ## Tests
 
 Run `just test` (or `.venv/bin/pytest`); `just check` adds lint and type checking.
+Lint uses the ruff version locked in the dev dependencies (`uv run ruff check .`).
+GitHub Actions (`.github/workflows/ci.yml`) runs the same lint, mypy and pytest
+steps on every push and pull request; no secrets or services are needed.
 Tests never contact FastDeploy: the `fake_fastdeploy` fixture in `tests/conftest.py`
 replaces the client in both engines with a scripted fake (deployment id or start
 error, a sequence of statuses or poll errors) and records poll sleeps instead of

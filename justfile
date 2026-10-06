@@ -50,7 +50,7 @@ typecheck:
 
 # Run linting
 lint:
-    uvx ruff check .
+    uv run ruff check .
 
 # Run lint, typecheck, and tests
 check:
