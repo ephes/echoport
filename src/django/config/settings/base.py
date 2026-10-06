@@ -153,6 +153,14 @@ ECHOPORT_ALLOWED_PATH_PREFIXES = env.list(
     default=["/home/", "/opt/", "/var/lib/", "/mnt/cryptdata/"]
 )
 
+# Health endpoint: minutes after a cron time before a target without a
+# successful run for that cycle is reported overdue (runs are sequential, so
+# later targets start after the cron minute). An in-progress run for the cycle
+# also suppresses overdue, bounded by the target timeout plus this grace.
+ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = env.int(
+    "ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES", default=60
+)
+
 # MinIO settings (for retention cleanup)
 MINIO_MC_PATH = env("MINIO_MC_PATH", default="/usr/local/bin/mc")
 MINIO_ALIAS = env("MINIO_ALIAS", default="minio")

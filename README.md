@@ -80,6 +80,7 @@ Backup target model note:
 | Variable | Description |
 |----------|-------------|
 | `ECHOPORT_CACHE_DIR` | Lock file location (default: system temp) |
+| `ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES` | Minutes after the first missed cron time before `/api/health/` reports a target without a successful run as `overdue` (default: `60`; `0` restores immediate overdue). See [Health Response Contract](docs/adding-backup-targets.md#health-response-contract) |
 
 ### MinIO Configuration
 
@@ -140,6 +141,7 @@ so no background backup or restore thread is started.
 | **Required target reports `invalid_schedule`** | Its cron expression is malformed and overall health is `unhealthy`; restore a valid declared schedule |
 | **Health reports `paused_required`** | Resume the target; planned pauses require an acknowledged monitor maintenance window. For permanent removal follow the [reviewed retirement procedure](docs/adding-backup-targets.md#reviewed-retirement-procedure) |
 | **Health reports `inactive_required`** | A future non-disabled lifecycle state prevents scheduled operation; inspect `target_status`, restore the active declared state, and update monitoring/runbooks for that lifecycle state |
+| **Health reports `overdue`** | No successful run since the last cron time, the grace window (`ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES`) has passed and no run for this cycle is in progress. Check the scheduler log and the run history; `overdue_hours` counts from the end of the grace window. A target that never succeeded is always overdue |
 | **Required target reports `last_failed`** | Trigger a manual backup after fixing the cause; health returns from `unhealthy` only after a successful run |
 | **`migrate` fails: names differ only by case** | Migration 0009 adds case-insensitive name uniqueness and refuses to run while targets such as `Echoport` and `echoport` coexist. Rename or delete the listed duplicates, then run `migrate` again |
 | **Permission denied** | Verify backup script is root-owned, check sudoers config |

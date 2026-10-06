@@ -189,14 +189,16 @@ class TestHealthEndpoint:
     def test_overdue_status_when_backup_missed(self, client, active_target):
         """Status should be overdue when backup is older than last scheduled time."""
         # Create a backup from 3 days ago (missed yesterday's 2am backup)
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=datetime_timezone.utc)
         BackupRun.objects.create(
             target=active_target,
             status=BackupRunStatus.SUCCESS,
-            started_at=timezone.now() - timedelta(days=3),
-            finished_at=timezone.now() - timedelta(days=3),
+            started_at=now - timedelta(days=3),
+            finished_at=now - timedelta(days=3),
         )
 
-        response = client.get(reverse("backups:health_status"))
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
         data = json.loads(response.content)
 
         assert data["status"] == "unhealthy"
@@ -206,7 +208,9 @@ class TestHealthEndpoint:
 
     def test_overdue_when_no_successful_backup(self, client, active_target):
         """Status should be overdue when target has schedule but no successful backup."""
-        response = client.get(reverse("backups:health_status"))
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=datetime_timezone.utc)
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
         data = json.loads(response.content)
 
         assert data["status"] == "unhealthy"
@@ -515,18 +519,20 @@ class TestHealthEndpoint:
             schedule="",  # No schedule so not overdue
             status="active",
         )
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=datetime_timezone.utc)
         BackupRun.objects.create(
             target=target2,
             status=BackupRunStatus.SUCCESS,
-            started_at=timezone.now() - timedelta(hours=2),
+            started_at=now - timedelta(hours=2),
         )
         BackupRun.objects.create(
             target=target2,
             status=BackupRunStatus.FAILED,
-            started_at=timezone.now() - timedelta(hours=1),
+            started_at=now - timedelta(hours=1),
         )
 
-        response = client.get(reverse("backups:health_status"))
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
         data = json.loads(response.content)
 
         # Overdue takes precedence -> unhealthy
@@ -591,3 +597,230 @@ class TestHealthEndpoint:
         assert data["status"] == "degraded"
         assert data["targets_by_name"]["test-service"]["status"] == "ok"
         assert len(data["recent_failures"]) == 1
+
+
+class TestHealthOverdueGrace:
+    """Scheduled runs in progress or within the grace window are not overdue."""
+
+    # Cron "0 2 * * *": the previous scheduled time for these instants is
+    # 2026-07-25 02:00 UTC.
+    CRON_TIME = datetime(2026, 7, 25, 2, 0, tzinfo=datetime_timezone.utc)
+
+    def _get(self, client, now):
+        with patch("backups.views.timezone.now", return_value=now):
+            response = client.get(reverse("backups:health_status"))
+        return json.loads(response.content)
+
+    def _yesterdays_success(self, target):
+        started = self.CRON_TIME - timedelta(days=1)
+        BackupRun.objects.create(
+            target=target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=started,
+            finished_at=started + timedelta(minutes=5),
+        )
+
+    @pytest.fixture
+    def required_target(self, active_target):
+        active_target.schedule_required = True
+        active_target.save()
+        return active_target
+
+    @pytest.mark.parametrize("run_status", [BackupRunStatus.PENDING, BackupRunStatus.RUNNING])
+    def test_run_in_progress_after_cron_time_is_not_overdue(
+        self, client, required_target, settings, run_status
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        self._yesterdays_success(required_target)
+        BackupRun.objects.create(
+            target=required_target,
+            status=run_status,
+            started_at=self.CRON_TIME + timedelta(minutes=40),
+        )
+
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=50))
+        target = data["targets_by_name"]["test-service"]
+
+        assert data["status"] == "healthy"
+        assert target["status"] == "ok"
+        assert target["overdue"] is False
+        assert target["active_run"] is True
+        assert "overdue_hours" not in target
+
+    def test_within_grace_window_without_run_is_not_overdue(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        self._yesterdays_success(required_target)
+
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=10))
+        target = data["targets_by_name"]["test-service"]
+
+        assert data["status"] == "healthy"
+        assert target["status"] == "ok"
+        assert target["overdue"] is False
+        assert target["active_run"] is False
+        assert target["grace_until"] == (
+            self.CRON_TIME + timedelta(minutes=30)
+        ).isoformat()
+
+    def test_grace_window_passed_without_success_is_overdue(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        self._yesterdays_success(required_target)
+
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=90))
+        target = data["targets_by_name"]["test-service"]
+
+        assert data["status"] == "unhealthy"
+        assert target["status"] == "overdue"
+        assert target["overdue"] is True
+        assert target["grace_until"] is None
+        # Measured from the end of the grace window, not the cron time.
+        assert target["overdue_hours"] == 1.0
+
+    def test_zero_grace_restores_immediate_overdue(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 0
+        self._yesterdays_success(required_target)
+
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=1))
+
+        assert data["targets_by_name"]["test-service"]["status"] == "overdue"
+
+    def test_failed_run_after_cron_time_within_grace_is_last_failed(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        self._yesterdays_success(required_target)
+        BackupRun.objects.create(
+            target=required_target,
+            status=BackupRunStatus.FAILED,
+            started_at=self.CRON_TIME + timedelta(minutes=1),
+            finished_at=self.CRON_TIME + timedelta(minutes=5),
+        )
+
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=10))
+
+        assert data["status"] == "unhealthy"
+        assert data["targets_by_name"]["test-service"]["status"] == "last_failed"
+
+    def test_failed_run_after_cron_time_past_grace_is_overdue(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        self._yesterdays_success(required_target)
+        BackupRun.objects.create(
+            target=required_target,
+            status=BackupRunStatus.FAILED,
+            started_at=self.CRON_TIME + timedelta(minutes=1),
+            finished_at=self.CRON_TIME + timedelta(minutes=5),
+        )
+
+        data = self._get(client, self.CRON_TIME + timedelta(hours=2))
+        target = data["targets_by_name"]["test-service"]
+
+        assert data["status"] == "unhealthy"
+        assert target["status"] == "overdue"
+        assert target["overdue"] is True
+        assert len(data["recent_failures"]) == 1
+
+    def test_stuck_run_does_not_hide_overdue_forever(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        required_target.timeout_seconds = 600
+        required_target.save()
+        self._yesterdays_success(required_target)
+        BackupRun.objects.create(
+            target=required_target,
+            status=BackupRunStatus.RUNNING,
+            started_at=self.CRON_TIME + timedelta(minutes=1),
+        )
+
+        # Started 02:01; bound = 10 min timeout + 30 min grace -> 02:41.
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=45))
+        target = data["targets_by_name"]["test-service"]
+
+        assert target["status"] == "overdue"
+        assert target["active_run"] is True
+
+    def test_run_started_before_cron_time_does_not_count(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        self._yesterdays_success(required_target)
+        BackupRun.objects.create(
+            target=required_target,
+            status=BackupRunStatus.RUNNING,
+            started_at=self.CRON_TIME - timedelta(minutes=5),
+        )
+
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=40))
+
+        assert data["targets_by_name"]["test-service"]["status"] == "overdue"
+
+    def test_grace_is_not_renewed_by_later_cron_ticks(
+        self, client, required_target, settings
+    ):
+        """With an hourly schedule, missed cycles must not keep renewing grace."""
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 60
+        required_target.schedule = "0 * * * *"
+        required_target.save()
+        BackupRun.objects.create(
+            target=required_target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=self.CRON_TIME,
+            finished_at=self.CRON_TIME + timedelta(minutes=5),
+        )
+
+        # First missed cycle 03:00, deadline 04:00; at 04:10 the 04:00 tick is
+        # inside a fresh 60-minute window but the target is still overdue.
+        data = self._get(client, self.CRON_TIME + timedelta(hours=2, minutes=10))
+        target = data["targets_by_name"]["test-service"]
+        assert target["status"] == "overdue"
+        assert target["overdue_hours"] == 0.2
+
+        # Inside the first missed cycle's grace window it is not overdue.
+        data = self._get(client, self.CRON_TIME + timedelta(hours=1, minutes=30))
+        assert data["targets_by_name"]["test-service"]["status"] == "ok"
+
+    def test_in_progress_run_does_not_cover_earlier_missed_cycle(
+        self, client, required_target, settings
+    ):
+        settings.ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = 30
+        # Last success two days before the cron time: yesterday's cycle missed.
+        BackupRun.objects.create(
+            target=required_target,
+            status=BackupRunStatus.SUCCESS,
+            started_at=self.CRON_TIME - timedelta(days=2),
+            finished_at=self.CRON_TIME - timedelta(days=2) + timedelta(minutes=5),
+        )
+        BackupRun.objects.create(
+            target=required_target,
+            status=BackupRunStatus.RUNNING,
+            started_at=self.CRON_TIME + timedelta(minutes=1),
+        )
+
+        data = self._get(client, self.CRON_TIME + timedelta(minutes=5))
+
+        assert data["targets_by_name"]["test-service"]["status"] == "overdue"
+
+    def test_health_queries_do_not_scale_with_targets(
+        self, client, db, settings, django_assert_max_num_queries
+    ):
+        for i in range(5):
+            target = BackupTarget.objects.create(
+                name=f"svc-{i}",
+                fastdeploy_service="echoport-backup",
+                service_name=f"svc-{i}.service",
+                db_path=f"/tmp/svc-{i}.db",
+                schedule="0 2 * * *",
+                status="active",
+            )
+            self._yesterdays_success(target)
+
+        with django_assert_max_num_queries(3):
+            self._get(client, self.CRON_TIME + timedelta(minutes=10))
