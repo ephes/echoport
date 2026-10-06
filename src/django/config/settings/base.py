@@ -169,6 +169,11 @@ FASTDEPLOY_DEFAULT_TIMEOUT = 600  # seconds (10 minutes)
 # (marked timeout) so it no longer blocks the target.
 ECHOPORT_STALE_RUN_GRACE_SECONDS = env.int("ECHOPORT_STALE_RUN_GRACE_SECONDS", default=900)
 
+# A backup run that timed out is checked for a late result for this long
+# after it started (FastDeploy cannot cancel the deployment, so it may still
+# upload an archive); see backups.backup_engine.reconcile_timed_out_runs.
+ECHOPORT_LATE_RESULT_WINDOW_SECONDS = env.int("ECHOPORT_LATE_RESULT_WINDOW_SECONDS", default=86400)
+
 # Per-target FastDeploy endpoints (keyed by endpoint name)
 # Maps endpoint_key -> {"base_url": "...", "token": "...", "service_tokens": {...}}
 # Tokens should be loaded from env vars (SOPS-backed in production).

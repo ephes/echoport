@@ -14,6 +14,11 @@ pending/running by a killed process (older than the target timeout plus
 ECHOPORT_STALE_RUN_GRACE_SECONDS) are marked as timed out so they stop
 blocking their target. --reap-only does just that and exits.
 
+Every non-dry-run, non-reap-only pass then checks recently timed-out backup
+runs for a late result: FastDeploy cannot cancel a deployment, so one that
+finishes after its run timed out may still upload an archive. That archive's
+storage key is recorded on the (still timed-out) run.
+
 The command uses a file lock to prevent overlapping instances.
 """
 
@@ -33,6 +38,7 @@ from backups.backup_engine import (
     BackupError,
     ConcurrentBackupError,
     get_active_run,
+    reconcile_timed_out_runs,
     start_backup,
 )
 from backups.models import BackupRunStatus, BackupStatus, BackupTarget, BackupTrigger
@@ -101,6 +107,8 @@ class Command(BaseCommand):
                 self._reap_stale_runs()
             if reap_only:
                 sys.exit(0)
+            if not dry_run:
+                self._reconcile_late_results()
             exit_code = self._run_scheduler(dry_run)
             sys.exit(exit_code)
         finally:
@@ -160,6 +168,16 @@ class Command(BaseCommand):
                 self.style.WARNING(
                     f"Reaped stale runs: {len(backups)} backup(s) {backups}, "
                     f"{len(restores)} restore(s) {restores}"
+                )
+            )
+
+    def _reconcile_late_results(self) -> None:
+        """Record archives uploaded by deployments that finished after their run timed out."""
+        recorded = reconcile_timed_out_runs()
+        if recorded:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Recorded late archives for {len(recorded)} timed-out backup run(s) {recorded}"
                 )
             )
 

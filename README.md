@@ -81,6 +81,7 @@ Backup target model note:
 |----------|-------------|
 | `ECHOPORT_CACHE_DIR` | Lock file location (default: system temp) |
 | `ECHOPORT_STALE_RUN_GRACE_SECONDS` | Grace added to a target's `timeout_seconds` before a still pending/running run is reaped as stale (default: `900`) |
+| `ECHOPORT_LATE_RESULT_WINDOW_SECONDS` | How long after it started a timed-out backup run is checked for a late archive (default: `86400`) |
 
 ### MinIO Configuration
 
@@ -101,7 +102,7 @@ chmod 600 .env  # Restrict .env permissions
 | Command | Description |
 |---------|-------------|
 | `backup <target>` | Run manual backup for a target |
-| `run_scheduled_backups` | Reap stale runs, then check and run due scheduled backups (cron); `--reap-only` only reaps |
+| `run_scheduled_backups` | Reap stale runs, record late archives of timed-out backups, then check and run due scheduled backups (cron); `--reap-only` only reaps |
 | `cleanup_old_backups` | Delete backups older than retention_days |
 | `create_devdata` | Create development backup targets |
 | `ensure_superuser` | Create/update admin user (deployment) |
@@ -135,6 +136,20 @@ restore of the same target starts (CLI, scheduler or UI). A reaped run never
 flips back to success or failure if its original process turns out to be
 alive and finishes later. Keep the grace above the longest real poll overrun.
 
+### Late results of timed-out backups
+
+FastDeploy has no cancel API, so marking a backup run `timeout` (by the
+polling engine or by the reaper) does not stop its deployment. If that
+deployment finishes later, every normal `run_scheduled_backups` pass (not
+`--dry-run` or `--reap-only`) collects its outcome while the run is younger
+than `ECHOPORT_LATE_RESULT_WINDOW_SECONDS` (default 24 h). The run's logs get
+the deployment's step output, prefixed with `[late result]`, and the run is
+not checked again. If the deployment reported a successful upload (even if a later step failed), the
+archive's storage key, size, checksum and file count are recorded on the run
+and its error message says so, so the archive is not left unreferenced. The
+run stays `timeout`. A deployment still running, or one FastDeploy cannot be
+reached for, is retried on the next pass.
+
 ## Tests
 
 Run `just test` (or `.venv/bin/pytest`); `just check` adds lint and type checking.
@@ -153,6 +168,7 @@ so no background backup or restore thread is started.
 |---------|----------|
 | **Backup stuck in PENDING** | Check FastDeploy logs, verify `FASTDEPLOY_SERVICE_TOKEN` |
 | **Run stuck pending/running after a restart ("backup already in progress")** | The process polling it was killed. It is reaped as `timeout` once older than the target timeout plus `ECHOPORT_STALE_RUN_GRACE_SECONDS` (the next scheduler pass, or `manage.py run_scheduled_backups --reap-only`, does this without waiting for a due backup). Runs younger than that are left alone |
+| **Timed-out backup run shows a storage key** | Its deployment finished after the timeout and uploaded an archive; the scheduler recorded it (see "Late results of timed-out backups"). The run stays `timeout`; raise the target's `timeout_seconds` if this happens regularly |
 | **MinIO upload failed** | Check `mc alias` configuration and bucket permissions |
 | **Restore blocked** | Restore requires valid checksum. Re-run backup if checksum missing |
 | **Scheduled backups not running** | Check cron/service logs at `/home/echoport/logs/scheduler.log` |

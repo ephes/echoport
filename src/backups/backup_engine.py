@@ -9,7 +9,7 @@ errors when mixing async code with ORM operations.
 
 import logging
 import time
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.conf import settings
 from django.db import IntegrityError, OperationalError, close_old_connections, connection, transaction
@@ -378,6 +378,142 @@ def _mark_run_timeout(run: BackupRun) -> None:
 def get_active_run(target: BackupTarget) -> BackupRun | None:
     """Get the currently active backup run for a target, if any."""
     return target.runs.filter(status__in=ACTIVE_BACKUP_STATUSES).first()
+
+
+DEFAULT_LATE_RESULT_WINDOW_SECONDS = 24 * 60 * 60
+
+LATE_RESULT_LOG_HEADER = "[late result]"
+
+
+def get_late_result_window_seconds() -> int:
+    """How long (seconds) after it started a timed-out run is checked for a late result."""
+    window = getattr(
+        settings, "ECHOPORT_LATE_RESULT_WINDOW_SECONDS", DEFAULT_LATE_RESULT_WINDOW_SECONDS
+    )
+    try:
+        window = int(window)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"Invalid ECHOPORT_LATE_RESULT_WINDOW_SECONDS {window!r}; "
+            f"using {DEFAULT_LATE_RESULT_WINDOW_SECONDS}"
+        )
+        return DEFAULT_LATE_RESULT_WINDOW_SECONDS
+    return max(window, 0)
+
+
+def reconcile_timed_out_runs(now=None) -> list[int]:
+    """
+    Collect the late outcome of backup runs that timed out.
+
+    FastDeploy has no cancel API, so a deployment keeps running after its
+    run was marked TIMEOUT (by the polling engine or by the stale run
+    reaper). If it later succeeds, it has uploaded an archive that no run
+    references. This looks up recent TIMEOUT runs that still have a
+    deployment id and no collected outcome (empty ``logs``), and once the
+    deployment has finished:
+
+    - stores its step logs (prefixed with ``[late result]``) so the run is
+      not checked again, and
+    - on a successful ECHOPORT_RESULT, records storage key, size, checksum
+      and file count on the run and notes it in the error message.
+
+    The run stays TIMEOUT. Deployments that are still running, or that
+    cannot be polled right now, are retried on the next call until the run
+    is older than ``ECHOPORT_LATE_RESULT_WINDOW_SECONDS``.
+
+    Returns the ids of runs that got a late archive recorded.
+    """
+    now = now or timezone.now()
+    cutoff = now - timedelta(seconds=get_late_result_window_seconds())
+    candidates = (
+        BackupRun.objects.filter(
+            status=BackupRunStatus.TIMEOUT,
+            fastdeploy_deployment_id__isnull=False,
+            storage_key="",
+            logs="",
+            started_at__gte=cutoff,
+        )
+        .select_related("target")
+        .order_by("started_at")
+    )
+
+    recorded: list[int] = []
+    for run in candidates:
+        try:
+            if _reconcile_timed_out_run(run):
+                recorded.append(run.pk)
+        except Exception:
+            logger.exception(f"Could not check backup run {run.pk} for a late result")
+    return recorded
+
+
+def _reconcile_timed_out_run(run: BackupRun) -> bool:
+    """Collect one timed-out run's late outcome. Returns True if an archive was recorded."""
+    target = run.target
+    deployment_id = run.fastdeploy_deployment_id
+    assert deployment_id is not None
+
+    fd_config = get_fastdeploy_config(
+        target.fastdeploy_endpoint_key,
+        target.fastdeploy_service,
+        token_override=target.service_token,
+    )
+    with FastDeployClient(
+        base_url=fd_config.get("base_url"),
+        service_token=fd_config.get("token"),
+    ) as client:
+        try:
+            status = client.get_deployment_status(deployment_id)
+        except DeploymentNotFoundError:
+            # Nothing left to collect; stop checking this run.
+            _store_late_outcome(
+                run,
+                {"logs": f"{LATE_RESULT_LOG_HEADER} deployment {deployment_id} no longer exists"},
+            )
+            return False
+        if not status.is_finished:
+            return False
+        # Any reported upload counts, even if a later step (e.g. cleanup)
+        # failed: the archive exists either way and must not stay orphaned.
+        result = client.parse_echoport_result(status.steps)
+
+    logs = f"{LATE_RESULT_LOG_HEADER} deployment {deployment_id} finished after the run timed out"
+    step_logs = _collect_step_logs(status.steps)
+    if step_logs:
+        logs = f"{logs}\n{step_logs}"
+    values: dict = {"logs": logs}
+
+    archived = bool(result and result.success and result.key)
+    if result and archived:
+        values.update(
+            storage_key=result.key,
+            size_bytes=result.size_bytes,
+            checksum_sha256=result.checksum_sha256,
+            file_count=result.file_count,
+            error_message=(
+                f"{run.error_message} Deployment {deployment_id} finished later and uploaded "
+                f"{result.key}; the archive is recorded on this run."
+            ).strip(),
+        )
+    stored = _store_late_outcome(run, values)
+    if stored and archived:
+        logger.warning(
+            f"Backup run {run.pk} for target '{target.name}' timed out, but deployment "
+            f"{deployment_id} later uploaded {values['storage_key']}; recorded it on the run"
+        )
+    return stored and archived
+
+
+def _store_late_outcome(run: BackupRun, values: dict) -> bool:
+    """Write ``values`` only while the run is still an unreconciled TIMEOUT run."""
+    return bool(
+        BackupRun.objects.filter(
+            pk=run.pk,
+            status=BackupRunStatus.TIMEOUT,
+            storage_key="",
+            logs="",
+        ).update(**values)
+    )
 
 
 def reap_stale_runs(target: BackupTarget | None = None, now=None, exclude_ids=()) -> list[int]:
