@@ -105,6 +105,7 @@ chmod 600 .env  # Restrict .env permissions
 | `backup <target>` | Run manual backup for a target |
 | `run_scheduled_backups` | Reap stale runs, record late archives of timed-out backups, then check and run due scheduled backups (cron); `--reap-only` only reaps |
 | `cleanup_old_backups` | Delete backups older than retention_days |
+| `check_service_tokens` | Report FastDeploy service tokens that are legacy, expiring, expired or unusable; exits 1 if any need attention (`--warn-days`, default 21) |
 | `create_devdata` | Create development backup targets |
 | `ensure_superuser` | Create/update admin user (deployment) |
 
@@ -151,6 +152,36 @@ and its error message says so, so the archive is not left unreferenced. The
 run stays `timeout`. A deployment still running, or one FastDeploy cannot be
 reached for, is retried on the next pass.
 
+### Service token expiry
+
+Every backup authenticates to FastDeploy with a service token (a JWT): the
+target's own `Service token`; else, when the target has a FastDeploy endpoint
+key, that endpoint's `service_tokens` entry or default `token`; else (blank
+endpoint key only) `FASTDEPLOY_SERVICE_TOKEN`. A named endpoint never falls
+back to the global token. FastDeploy rejects a token
+after its `exp`, and rejects a legacy token (one without `jti`, minted outside
+FastDeploy's token registry) once its `LEGACY_SERVICE_TOKENS_ACCEPTED_UNTIL`
+grace ends. Either way every backup using that token fails with HTTP 401.
+
+`manage.py check_service_tokens [--warn-days 21]` lists the token each
+non-disabled target would use, plus the global token, with its source,
+expiry, legacy flag and status:
+
+- `ok`: has a `jti` and does not expire within the warning window
+- `expiring`: expires within `--warn-days`
+- `expired`: already past `exp`
+- `legacy`: no `jti`; re-issue it through FastDeploy's token registry
+- `undecodable`: not a JWT Echoport can read
+- `missing`: no token resolves for the target (or its endpoint config is invalid)
+
+The global token shows `unset` when it is empty; that only matters for targets
+that fall back to it, and those show `missing`. The command exits 1 when any
+row needs attention, so it can run from cron or a monitor. The admin target
+list has a matching "Token expires" column with a badge for any status other
+than `ok`. Tokens are decoded without signature verification and only `exp`,
+the presence of `jti` and the `service` claim are read; token values are never
+printed or rendered.
+
 ## Tests
 
 Run `just test` (or `.venv/bin/pytest`); `just check` adds lint and type checking.
@@ -170,6 +201,7 @@ so no background backup or restore thread is started.
 | **Backup stuck in PENDING** | Check FastDeploy logs, verify `FASTDEPLOY_SERVICE_TOKEN` |
 | **Run stuck pending/running after a restart ("backup already in progress")** | The process polling it was killed. It is reaped as `timeout` once older than the target timeout plus `ECHOPORT_STALE_RUN_GRACE_SECONDS` (the next scheduler pass, or `manage.py run_scheduled_backups --reap-only`, does this without waiting for a due backup). Runs younger than that are left alone |
 | **Timed-out backup run shows a storage key** | Its deployment finished after the timeout and uploaded an archive; the scheduler recorded it (see "Late results of timed-out backups"). The run stays `timeout`; raise the target's `timeout_seconds` if this happens regularly |
+| **Backups fail with HTTP 401** | The FastDeploy service token expired or is a legacy token FastDeploy no longer accepts. Run `manage.py check_service_tokens` and re-issue the flagged tokens |
 | **MinIO upload failed** | Check `mc alias` configuration and bucket permissions |
 | **Restore blocked** | Restore requires valid checksum. Re-run backup if checksum missing |
 | **Scheduled backups not running** | Check cron/service logs at `/home/echoport/logs/scheduler.log` |

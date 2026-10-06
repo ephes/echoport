@@ -278,6 +278,10 @@ Token lookup order (when `FastDeploy endpoint key` is blank — default endpoint
 1. If `Service token` is set on the target, use that
 2. Else use the `FASTDEPLOY_SERVICE_TOKEN` setting
 
+After adding or rotating a token, run `manage.py check_service_tokens` (or look
+at the "Token expires" column in the admin target list) to confirm the token the
+target resolves is not legacy (no `jti`), expired or about to expire.
+
 ## Understanding Local vs Remote Backup Targets
 
 There are two types of backup targets:

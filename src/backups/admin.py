@@ -1,8 +1,11 @@
 from django import forms
 from django.contrib import admin
 from django.core.exceptions import ValidationError
+from django.utils import timezone
+from django.utils.html import format_html
 
 from .models import BackupRun, BackupTarget, BackupTargetMode, RestoreRun
+from .service_tokens import STATUS_LEGACY, STATUS_OK, assess_target
 from .validation import (
     get_allowed_path_prefixes,
     validate_backup_source,
@@ -146,6 +149,7 @@ class BackupTargetAdmin(admin.ModelAdmin):
         "schedule_required",
         "fastdeploy_service",
         "has_service_token",
+        "token_expires",
         "updated_at",
     ]
     list_filter = ["target_mode", "status", "schedule_required"]
@@ -189,6 +193,27 @@ class BackupTargetAdmin(admin.ModelAdmin):
     @admin.display(boolean=True, description="Token")
     def has_service_token(self, obj):
         return bool(obj.service_token)
+
+    @admin.display(description="Token expires")
+    def token_expires(self, obj):
+        """Expiry of the token a backup would use, with a status badge.
+
+        Decodes only non-secret claims (see backups.service_tokens); the token
+        value is never rendered.
+        """
+        report = assess_target(obj, now=timezone.now())
+        expires = report.expires_at.strftime("%Y-%m-%d") if report.expires_at else "-"
+        badges = []
+        if report.status != STATUS_OK:
+            badges.append(report.status)
+        if report.is_legacy and report.status != STATUS_LEGACY:
+            badges.append("legacy")
+        if not badges:
+            return expires
+        badge_html = format_html(
+            '<strong style="color: #ba2121;">{}</strong>', ", ".join(badges)
+        )
+        return format_html("{} {}", expires, badge_html)
 
     def has_delete_permission(self, request, obj=None):
         # Block deletion to preserve audit history
