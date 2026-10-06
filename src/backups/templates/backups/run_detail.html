@@ -85,6 +85,10 @@
     </div>
     {% endif %}
 
+    {% if restores or run.status == 'success' %}
+    {% include "backups/partials/restore_history.html" with restores=restores show_backup=False heading="Restores from this Backup" empty_text="No restores from this backup." limit=restore_history_limit %}
+    {% endif %}
+
     {% if run.status == 'success' and user.is_staff %}
     <div class="restore-section">
         <h3>Restore from this Backup</h3>

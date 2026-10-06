@@ -40,6 +40,9 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Number of restores listed on the target and backup run pages.
+RESTORE_HISTORY_LIMIT = 20
+
 
 def _run_backup_in_thread(run_id: int) -> None:
     """
@@ -109,14 +112,18 @@ def dashboard(request):
 @login_required
 def target_detail(request, target_id):
     """
-    Show details for a specific backup target including run history.
+    Show details for a specific backup target including backup and restore history.
     """
     target = get_object_or_404(BackupTarget, id=target_id)
     runs = target.runs.all()[:50]  # Last 50 runs
+    # Read-only history; the template only needs backup_run_id, so no join.
+    restores = target.restore_runs.order_by("-started_at", "-id")[:RESTORE_HISTORY_LIMIT]
 
     context = {
         "target": target,
         "runs": runs,
+        "restores": restores,
+        "restore_history_limit": RESTORE_HISTORY_LIMIT,
         "active_run": get_active_run(target),
     }
 
@@ -130,10 +137,13 @@ def run_detail(request, run_id):
     """
     run = get_object_or_404(BackupRun.objects.select_related("target"), id=run_id)
     target = run.target
+    restores = run.restores.order_by("-started_at", "-id")[:RESTORE_HISTORY_LIMIT]
 
     context = {
         "run": run,
         "target": target,
+        "restores": restores,
+        "restore_history_limit": RESTORE_HISTORY_LIMIT,
         "active_backup": get_active_run(target),
         "active_restore": get_active_restore(target),
     }
