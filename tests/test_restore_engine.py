@@ -465,13 +465,15 @@ class TestHandleDeploymentFinished:
                 raise RuntimeError("close failures are ignored")
 
         monkeypatch.setattr("backups.restore_engine.connection", RecordingConnection())
-        original_save = running_restore.save
+        from backups import restore_engine
+
+        original_save = restore_engine.save_if_still_active
 
         def recording_save(*args, **kwargs):
             calls.append("save")
             return original_save(*args, **kwargs)
 
-        monkeypatch.setattr(running_restore, "save", recording_save)
+        monkeypatch.setattr(restore_engine, "save_if_still_active", recording_save)
         status = finished_status([result_step({"success": True, "file_count": 1})])
 
         run = _handle_deployment_finished(running_restore, status, self._client())

@@ -24,8 +24,11 @@ from .fastdeploy_client import (
     get_fastdeploy_config,
 )
 from .models import BackupRun, BackupRunStatus, BackupTarget, BackupTrigger
+from .run_reaper import reap_stale, save_if_still_active
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_BACKUP_STATUSES = [BackupRunStatus.PENDING, BackupRunStatus.RUNNING]
 
 
 class BackupError(Exception):
@@ -56,6 +59,12 @@ def _get_active_restore(target: BackupTarget):
     """Check if a restore is running for this target."""
     from .restore_engine import get_active_restore
     return get_active_restore(target)
+
+
+def _reap_stale_restores(target: BackupTarget) -> list[int]:
+    """Reap stale restore runs for this target (they would block the backup)."""
+    from .restore_engine import reap_stale_runs as reap_stale_restore_runs
+    return reap_stale_restore_runs(target=target)
 
 
 def start_backup(
@@ -89,6 +98,11 @@ def start_backup(
     """
     # Ensure fresh DB connection when called from background thread
     close_old_connections()
+
+    # Runs left active by a killed process would block this target forever;
+    # reap them before checking for concurrent operations.
+    reap_stale_runs(target=target, exclude_ids=[existing_run.pk] if existing_run else ())
+    _reap_stale_restores(target)
 
     # Helper to mark existing_run as failed if preconditions fail
     def _fail_existing_run_and_raise(error: Exception) -> None:
@@ -175,14 +189,29 @@ def start_backup(
             base_url=fd_config.get("base_url"),
             service_token=fd_config.get("token"),
         ) as client:
+            # Claim the run (PENDING -> RUNNING) before launching anything.
+            # If it was reaped as stale meanwhile (e.g. this worker was paused),
+            # another operation may already own the target: do not deploy.
+            run.status = BackupRunStatus.RUNNING
+            if not save_if_still_active(
+                run, [BackupRunStatus.PENDING], ["status"], insert_if_missing=False
+            ):
+                raise BackupError(
+                    f"Backup run {run.id} is no longer pending (status '{run.status}'); "
+                    f"not starting a deployment"
+                )
+
             try:
                 deployment_id = client.start_deployment(
                     target.fastdeploy_service,
                     context,
                 )
                 run.fastdeploy_deployment_id = deployment_id
-                run.status = BackupRunStatus.RUNNING
-                run.save(update_fields=["fastdeploy_deployment_id", "status"])
+                if not save_if_still_active(run, ACTIVE_BACKUP_STATUSES, ["fastdeploy_deployment_id"]):
+                    raise BackupError(
+                        f"Backup run {run.id} was finalized (status '{run.status}') while "
+                        f"deployment {deployment_id} was starting; not tracking it"
+                    )
 
             except DeploymentStartError as e:
                 logger.error(f"Failed to start deployment: {e}")
@@ -299,8 +328,22 @@ def _handle_deployment_finished(
         logger.error(f"Backup {run.id} deployment failed: {error_msg}")
 
     run.finished_at = timezone.now()
-    run.save()
+    # Never overwrite a run that was reaped as stale meanwhile.
+    save_if_still_active(run, ACTIVE_BACKUP_STATUSES, _FINAL_FIELDS)
     return run
+
+
+# Fields written when a backup run reaches a final state.
+_FINAL_FIELDS = [
+    "status",
+    "logs",
+    "storage_key",
+    "size_bytes",
+    "checksum_sha256",
+    "file_count",
+    "error_message",
+    "finished_at",
+]
 
 
 def _collect_step_logs(steps: list[dict]) -> str:
@@ -321,7 +364,7 @@ def _mark_run_failed(run: BackupRun, error_message: str) -> None:
     run.status = BackupRunStatus.FAILED
     run.error_message = error_message
     run.finished_at = timezone.now()
-    run.save()
+    save_if_still_active(run, ACTIVE_BACKUP_STATUSES, ["status", "error_message", "finished_at"])
 
 
 def _mark_run_timeout(run: BackupRun) -> None:
@@ -329,11 +372,26 @@ def _mark_run_timeout(run: BackupRun) -> None:
     run.status = BackupRunStatus.TIMEOUT
     run.error_message = f"Backup timed out after {run.target.timeout_seconds} seconds"
     run.finished_at = timezone.now()
-    run.save()
+    save_if_still_active(run, ACTIVE_BACKUP_STATUSES, ["status", "error_message", "finished_at"])
 
 
 def get_active_run(target: BackupTarget) -> BackupRun | None:
     """Get the currently active backup run for a target, if any."""
-    return target.runs.filter(
-        status__in=[BackupRunStatus.PENDING, BackupRunStatus.RUNNING]
-    ).first()
+    return target.runs.filter(status__in=ACTIVE_BACKUP_STATUSES).first()
+
+
+def reap_stale_runs(target: BackupTarget | None = None, now=None, exclude_ids=()) -> list[int]:
+    """
+    Mark backup runs left PENDING/RUNNING by a killed process as TIMEOUT.
+
+    See ``backups.run_reaper`` for the staleness rule. Returns reaped run ids.
+    """
+    return reap_stale(
+        BackupRun,
+        ACTIVE_BACKUP_STATUSES,
+        BackupRunStatus.TIMEOUT,
+        "backup",
+        target=target,
+        now=now,
+        exclude_ids=exclude_ids,
+    )

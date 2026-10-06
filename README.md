@@ -80,6 +80,7 @@ Backup target model note:
 | Variable | Description |
 |----------|-------------|
 | `ECHOPORT_CACHE_DIR` | Lock file location (default: system temp) |
+| `ECHOPORT_STALE_RUN_GRACE_SECONDS` | Grace added to a target's `timeout_seconds` before a still pending/running run is reaped as stale (default: `900`) |
 
 ### MinIO Configuration
 
@@ -100,7 +101,7 @@ chmod 600 .env  # Restrict .env permissions
 | Command | Description |
 |---------|-------------|
 | `backup <target>` | Run manual backup for a target |
-| `run_scheduled_backups` | Check and run due scheduled backups (cron) |
+| `run_scheduled_backups` | Reap stale runs, then check and run due scheduled backups (cron); `--reap-only` only reaps |
 | `cleanup_old_backups` | Delete backups older than retention_days |
 | `create_devdata` | Create development backup targets |
 | `ensure_superuser` | Create/update admin user (deployment) |
@@ -119,6 +120,21 @@ FastDeploy service `echoport-self-backup`, or by the systemd unit
 
 Or use Justfile shortcuts: `just backup <target>`, `just devdata`
 
+### Stale runs
+
+Only one backup and one restore can be active (pending/running) per target.
+The process that starts a run also polls it, so a deploy, gunicorn restart,
+OOM kill or killed cron run can leave a run active forever, which would block
+that target's scheduled backups and UI restores. Echoport therefore reaps a
+run that is still pending/running when it is older than the target's
+`timeout_seconds` plus `ECHOPORT_STALE_RUN_GRACE_SECONDS` (default 15 min):
+it is marked `timeout` with an error message saying it was reaped. Reaping
+happens at the start of every `run_scheduled_backups` pass (not with
+`--dry-run`), with `run_scheduled_backups --reap-only`, and before a backup or
+restore of the same target starts (CLI, scheduler or UI). A reaped run never
+flips back to success or failure if its original process turns out to be
+alive and finishes later. Keep the grace above the longest real poll overrun.
+
 ## Tests
 
 Run `just test` (or `.venv/bin/pytest`); `just check` adds lint and type checking.
@@ -133,6 +149,7 @@ so no background backup or restore thread is started.
 | Problem | Solution |
 |---------|----------|
 | **Backup stuck in PENDING** | Check FastDeploy logs, verify `FASTDEPLOY_SERVICE_TOKEN` |
+| **Run stuck pending/running after a restart ("backup already in progress")** | The process polling it was killed. It is reaped as `timeout` once older than the target timeout plus `ECHOPORT_STALE_RUN_GRACE_SECONDS` (the next scheduler pass, or `manage.py run_scheduled_backups --reap-only`, does this without waiting for a due backup). Runs younger than that are left alone |
 | **MinIO upload failed** | Check `mc alias` configuration and bucket permissions |
 | **Restore blocked** | Restore requires valid checksum. Re-run backup if checksum missing |
 | **Scheduled backups not running** | Check cron/service logs at `/home/echoport/logs/scheduler.log` |

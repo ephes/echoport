@@ -25,6 +25,7 @@ from .restore_engine import (
     start_restore,
     _mark_run_failed as _mark_restore_failed,
 )
+from .run_reaper import reap_all_stale_runs
 from .models import (
     BackupRun,
     BackupRunStatus,
@@ -152,6 +153,9 @@ def trigger_backup(request, target_id):
     """
     target = get_object_or_404(BackupTarget, id=target_id)
     triggered_by = request.user.username
+
+    # Runs left active by a killed process would block this target forever.
+    reap_all_stale_runs(target=target)
 
     # Check if target is active
     if target.status != BackupStatus.ACTIVE:
@@ -306,6 +310,9 @@ def trigger_restore(request, run_id):
             f"Self-restore cannot run from the UI. Use CLI: {cli_command}",
         )
         return redirect("backups:run_detail", run_id=run_id)
+
+    # Runs left active by a killed process would block this target forever.
+    reap_all_stale_runs(target=target)
 
     # Check preconditions before creating run (to avoid stuck PENDING runs)
     if not backup_run.checksum_sha256:
