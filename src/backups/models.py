@@ -1,5 +1,26 @@
 from django.db import models
+from django.db.models.functions import Lower
 from django.utils import timezone
+
+# Identity of Echoport's own backup target. A restore of this target stops the
+# echoport systemd unit, which kills the web process running the restore, so it
+# must run from the CLI. Matching is case-insensitive and whitespace-tolerant.
+SELF_TARGET_NAME = "echoport"
+SELF_FASTDEPLOY_SERVICE = "echoport-self-backup"
+SELF_SYSTEMD_UNIT = "echoport.service"
+
+
+def normalize_identity(value: str | None) -> str:
+    """Normalize a target/service identifier for identity comparisons."""
+    return (value or "").strip().casefold()
+
+
+def _normalize_systemd_unit(value: str | None) -> str:
+    unit = normalize_identity(value)
+    if unit and "." not in unit:
+        # systemd treats a bare unit name as "<name>.service"
+        unit = f"{unit}.service"
+    return unit
 
 
 class BackupStatus(models.TextChoices):
@@ -41,7 +62,10 @@ class BackupTarget(models.Model):
     name = models.CharField(
         max_length=100,
         unique=True,
-        help_text="Unique identifier for this backup target (e.g., 'nyxmon')",
+        help_text=(
+            "Unique identifier for this backup target (e.g., 'nyxmon'). "
+            "Names are unique regardless of case."
+        ),
     )
     description = models.TextField(
         blank=True,
@@ -148,9 +172,34 @@ class BackupTarget(models.Model):
     class Meta:
         db_table = "backup_target"
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                Lower("name"),
+                name="unique_backup_target_name_ci",
+                violation_error_message=(
+                    "A backup target with this name already exists "
+                    "(names are compared case-insensitively)."
+                ),
+            ),
+        ]
 
     def __str__(self):
         return self.name
+
+    @property
+    def is_self_target(self) -> bool:
+        """
+        True when this target backs up Echoport itself.
+
+        Matches the normalized target name, the dedicated FastDeploy service,
+        or the systemd unit a restore would stop, so a renamed or differently
+        cased self target is still recognized.
+        """
+        return (
+            normalize_identity(self.name) == SELF_TARGET_NAME
+            or normalize_identity(self.fastdeploy_service) == SELF_FASTDEPLOY_SERVICE
+            or _normalize_systemd_unit(self.service_name) == SELF_SYSTEMD_UNIT
+        )
 
     def clean(self):
         """
@@ -272,6 +321,26 @@ class BackupTarget(models.Model):
     def get_last_scheduled_run(self):
         """Get the most recent scheduled backup run for this target (any status)."""
         return self.runs.filter(trigger=BackupTrigger.SCHEDULED).order_by("-started_at").first()
+
+
+def exact_name_hint(name: str) -> str:
+    """
+    Explain a failed exact target-name lookup.
+
+    CLI lookups stay exact so scripts and cron entries never act on a
+    different target than they name. When a target matches only after
+    ignoring case or surrounding whitespace, name it so the operator can
+    correct the command.
+    """
+    candidates = list(
+        BackupTarget.objects.filter(name__iexact=(name or "").strip())
+        .exclude(name=name)
+        .values_list("name", flat=True)
+    )
+    if not candidates:
+        return ""
+    suggestions = ", ".join(f"'{candidate}'" for candidate in candidates)
+    return f" Target names are matched exactly; did you mean {suggestions}?"
 
 
 class BackupRun(models.Model):

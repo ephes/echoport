@@ -3,6 +3,7 @@ Views for Echoport backup dashboard.
 """
 
 import logging
+import shlex
 import threading
 from datetime import datetime
 
@@ -290,18 +291,19 @@ def trigger_restore(request, run_id):
     target = backup_run.target
     triggered_by = request.user.username
 
-    # Block UI self-restore for echoport target — must use CLI command instead.
+    # Block UI self-restore for Echoport's own target — must use CLI command instead.
     # Self-restore stops the echoport service, which would kill this web process
-    # and the in-flight restore thread. Use: manage.py restore echoport <backup_run_id>
-    if target.name == "echoport":
+    # and the in-flight restore thread. The target is recognized by normalized
+    # name, FastDeploy service and systemd unit (see BackupTarget.is_self_target).
+    if target.is_self_target:
+        cli_command = f"manage.py restore {shlex.quote(target.name)} {run_id}"
         logger.warning(
-            f"UI self-restore blocked for target 'echoport' (backup {run_id}). "
-            "Use CLI: manage.py restore echoport <backup_run_id>"
+            f"UI self-restore blocked for target '{target.name}' (backup {run_id}). "
+            f"Use CLI: {cli_command}"
         )
         messages.warning(
             request,
-            f"Self-restore cannot run from the UI. "
-            f"Use CLI: manage.py restore echoport {run_id}",
+            f"Self-restore cannot run from the UI. Use CLI: {cli_command}",
         )
         return redirect("backups:run_detail", run_id=run_id)
 
