@@ -53,7 +53,7 @@ Read this before entering values to avoid validation errors.
 
 | Field (Admin Label) | Type | Required | Default | Constraints / Notes | Example |
 | --- | --- | --- | --- | --- | --- |
-| Name | Text | Yes | None | Unique, max 100 chars | `nyxmon` |
+| Name | Text | Yes | None | Unique regardless of case (`Nyxmon` and `nyxmon` cannot coexist), max 100 chars. CLI commands match the name exactly. | `nyxmon` |
 | Description | Text | No | Blank | Human-readable description | `NYXMON production backups` |
 | Icon | Text | No | Blank | Emoji or icon identifier, max 50 chars | `📊` |
 | Status | Choice | No | `Active` | `Active`, `Paused`, `Disabled`. Disabled is the retirement mechanism (deletion blocked). | `Active` |

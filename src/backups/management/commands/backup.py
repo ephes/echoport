@@ -13,7 +13,7 @@ from backups.backup_engine import (
     ConcurrentBackupError,
     start_backup,
 )
-from backups.models import BackupRunStatus, BackupTarget, BackupTrigger
+from backups.models import BackupRunStatus, BackupTarget, BackupTrigger, exact_name_hint
 
 
 class Command(BaseCommand):
@@ -39,7 +39,9 @@ class Command(BaseCommand):
         try:
             target = BackupTarget.objects.get(name=target_name)
         except BackupTarget.DoesNotExist:
-            raise CommandError(f"Backup target '{target_name}' not found")
+            raise CommandError(
+                f"Backup target '{target_name}' not found.{exact_name_hint(target_name)}"
+            )
 
         if target.status != "active":
             raise CommandError(

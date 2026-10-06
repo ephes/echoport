@@ -29,7 +29,14 @@ from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from backups.minio_client import delete_object
-from backups.models import BackupRun, BackupRunStatus, BackupStatus, BackupTarget, RestoreRun
+from backups.models import (
+    BackupRun,
+    BackupRunStatus,
+    BackupStatus,
+    BackupTarget,
+    RestoreRun,
+    exact_name_hint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +197,9 @@ class Command(BaseCommand):
                 targets = [BackupTarget.objects.get(name=target_name)]
             except BackupTarget.DoesNotExist:
                 self.stderr.write(
-                    self.style.ERROR(f"Target not found: {target_name}")
+                    self.style.ERROR(
+                        f"Target not found: {target_name}.{exact_name_hint(target_name)}"
+                    )
                 )
                 return 1
         else:

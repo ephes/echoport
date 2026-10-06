@@ -10,7 +10,13 @@ scenarios where the web process cannot be used (e.g., restoring echoport itself)
 
 from django.core.management.base import BaseCommand, CommandError
 
-from backups.models import BackupRun, BackupRunStatus, BackupTarget, RestoreRunStatus
+from backups.models import (
+    BackupRun,
+    BackupRunStatus,
+    BackupTarget,
+    RestoreRunStatus,
+    exact_name_hint,
+)
 from backups.restore_engine import (
     ConcurrentBackupError,
     ConcurrentRestoreError,
@@ -50,7 +56,9 @@ class Command(BaseCommand):
         try:
             target = BackupTarget.objects.get(name=target_name)
         except BackupTarget.DoesNotExist:
-            raise CommandError(f"Backup target '{target_name}' not found")
+            raise CommandError(
+                f"Backup target '{target_name}' not found.{exact_name_hint(target_name)}"
+            )
 
         if target.status != "active":
             raise CommandError(

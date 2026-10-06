@@ -107,6 +107,16 @@ chmod 600 .env  # Restrict .env permissions
 
 Run via: `cd src/django && uv run python manage.py <command>`
 
+Target names are unique regardless of case, but commands look them up exactly
+(`backup Nyxmon` does not run `nyxmon`); a near miss is reported with the
+correctly cased name.
+
+Restoring Echoport's own target is blocked in the web UI because the restore
+stops the running service; use `manage.py restore <target> <backup_run_id>`.
+The UI recognizes the self target by name (`echoport`, any case), by the
+FastDeploy service `echoport-self-backup`, or by the systemd unit
+`echoport.service`.
+
 Or use Justfile shortcuts: `just backup <target>`, `just devdata`
 
 ## Tests
@@ -131,6 +141,7 @@ so no background backup or restore thread is started.
 | **Health reports `paused_required`** | Resume the target; planned pauses require an acknowledged monitor maintenance window. For permanent removal follow the [reviewed retirement procedure](docs/adding-backup-targets.md#reviewed-retirement-procedure) |
 | **Health reports `inactive_required`** | A future non-disabled lifecycle state prevents scheduled operation; inspect `target_status`, restore the active declared state, and update monitoring/runbooks for that lifecycle state |
 | **Required target reports `last_failed`** | Trigger a manual backup after fixing the cause; health returns from `unhealthy` only after a successful run |
+| **`migrate` fails: names differ only by case** | Migration 0009 adds case-insensitive name uniqueness and refuses to run while targets such as `Echoport` and `echoport` coexist. Rename or delete the listed duplicates, then run `migrate` again |
 | **Permission denied** | Verify backup script is root-owned, check sudoers config |
 
 ## Limitations
