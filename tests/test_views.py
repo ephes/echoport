@@ -6,11 +6,13 @@ Background threads are never started: threading.Thread in backups.views is
 replaced, and on_commit callbacks are captured explicitly.
 """
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.contrib.auth.models import User
 from django.urls import reverse
+from django.utils import timezone
 
 from backups import views
 from backups.models import (
@@ -353,6 +355,174 @@ class TestRestoreDetailAndStatus:
 
         assert response.status_code == 200
         assert "HX-Trigger-After-Swap" not in response
+
+
+# ---------------------------------------------------------------------------
+# Read-only restore history on target and backup run pages
+# ---------------------------------------------------------------------------
+
+
+def _restore_at(backup_run, started_at, status=RestoreRunStatus.SUCCESS, **fields):
+    return RestoreRun.objects.create(
+        backup_run=backup_run,
+        target=backup_run.target,
+        status=status,
+        started_at=started_at,
+        **fields,
+    )
+
+
+def _successful_backup(target, key):
+    return BackupRun.objects.create(
+        target=target,
+        status=BackupRunStatus.SUCCESS,
+        storage_bucket="backups",
+        storage_key=key,
+        checksum_sha256=CHECKSUM,
+    )
+
+
+@pytest.mark.django_db
+class TestRestoreHistory:
+    @pytest.fixture
+    def other_target(self, db):
+        return BackupTarget.objects.create(
+            name="other-target",
+            fastdeploy_service="echoport-backup",
+            service_name="other-target.service",
+            db_path="/tmp/other.db",
+            status="active",
+        )
+
+    def test_target_detail_lists_own_restores_newest_first(
+        self, user_client, target, backup_run, other_target
+    ):
+        now = timezone.now()
+        second_backup = _successful_backup(target, "view-target/second.tar.gz")
+        older = _restore_at(
+            backup_run,
+            now - timedelta(days=2),
+            status=RestoreRunStatus.FAILED,
+            triggered_by="operator",
+        )
+        newer = _restore_at(
+            second_backup,
+            now - timedelta(hours=1),
+            finished_at=now - timedelta(minutes=58),
+        )
+        foreign = _restore_at(
+            _successful_backup(other_target, "other-target/x.tar.gz"),
+            now,
+        )
+
+        response = user_client.get(reverse("backups:target_detail", args=[target.id]))
+
+        assert response.status_code == 200
+        assert list(response.context["restores"]) == [newer, older]
+        html = response.content.decode()
+        assert "Restore History" in html
+        newer_link = reverse("backups:restore_detail", args=[newer.id])
+        older_link = reverse("backups:restore_detail", args=[older.id])
+        assert newer_link in html and older_link in html
+        assert html.index(newer_link) < html.index(older_link)
+        assert reverse("backups:restore_detail", args=[foreign.id]) not in html
+        # Source backup links, status, trigger user and duration are shown.
+        assert reverse("backups:run_detail", args=[second_backup.id]) in html
+        assert "Failed" in html
+        assert "(operator)" in html
+        assert "120.0s" in html
+
+    def test_target_detail_without_restores_shows_empty_state(self, user_client, target):
+        response = user_client.get(reverse("backups:target_detail", args=[target.id]))
+
+        assert response.status_code == 200
+        assert "No restores yet." in response.content.decode()
+
+    def test_target_detail_offers_no_restore_action(self, staff_client, backup_run):
+        _restore_at(backup_run, timezone.now())
+
+        response = staff_client.get(reverse("backups:target_detail", args=[backup_run.target.id]))
+
+        html = response.content.decode()
+        assert reverse("backups:trigger_restore", args=[backup_run.id]) not in html
+
+    def test_target_detail_caps_restore_list(self, user_client, backup_run):
+        now = timezone.now()
+        limit = views.RESTORE_HISTORY_LIMIT
+        for i in range(limit + 3):
+            _restore_at(backup_run, now - timedelta(minutes=i))
+
+        response = user_client.get(reverse("backups:target_detail", args=[backup_run.target.id]))
+
+        assert len(response.context["restores"]) == limit
+        assert f"Showing the {limit} most recent restores." in response.content.decode()
+
+    def test_target_detail_query_count_is_bounded(
+        self, user_client, backup_run, django_assert_max_num_queries
+    ):
+        now = timezone.now()
+        for i in range(10):
+            backup = _successful_backup(backup_run.target, f"view-target/{i}.tar.gz")
+            _restore_at(backup, now - timedelta(minutes=i))
+        url = reverse("backups:target_detail", args=[backup_run.target.id])
+
+        with django_assert_max_num_queries(10):
+            response = user_client.get(url)
+
+        assert len(response.context["restores"]) == 10
+
+    def test_run_detail_lists_only_restores_of_that_backup(
+        self, user_client, target, backup_run
+    ):
+        now = timezone.now()
+        other_backup = _successful_backup(target, "view-target/other.tar.gz")
+        older = _restore_at(backup_run, now - timedelta(days=1))
+        newer = _restore_at(backup_run, now, status=RestoreRunStatus.RUNNING)
+        unrelated = _restore_at(other_backup, now - timedelta(hours=2))
+
+        response = user_client.get(reverse("backups:run_detail", args=[backup_run.id]))
+
+        assert response.status_code == 200
+        assert list(response.context["restores"]) == [newer, older]
+        html = response.content.decode()
+        assert "Restores from this Backup" in html
+        assert reverse("backups:restore_detail", args=[newer.id]) in html
+        assert reverse("backups:restore_detail", args=[unrelated.id]) not in html
+
+    def test_run_detail_without_restores_shows_empty_state(self, user_client, backup_run):
+        response = user_client.get(reverse("backups:run_detail", args=[backup_run.id]))
+
+        assert "No restores from this backup." in response.content.decode()
+
+    def test_failed_backup_run_hides_empty_restore_section(self, user_client, target):
+        failed = BackupRun.objects.create(target=target, status=BackupRunStatus.FAILED)
+
+        response = user_client.get(reverse("backups:run_detail", args=[failed.id]))
+
+        assert response.status_code == 200
+        assert "Restores from this Backup" not in response.content.decode()
+
+    def test_run_detail_query_count_is_bounded(
+        self, user_client, backup_run, django_assert_max_num_queries
+    ):
+        now = timezone.now()
+        for i in range(10):
+            _restore_at(backup_run, now - timedelta(minutes=i))
+        url = reverse("backups:run_detail", args=[backup_run.id])
+
+        with django_assert_max_num_queries(10):
+            response = user_client.get(url)
+
+        assert len(response.context["restores"]) == 10
+
+    def test_history_pages_require_login(self, client, backup_run):
+        for url in (
+            reverse("backups:target_detail", args=[backup_run.target.id]),
+            reverse("backups:run_detail", args=[backup_run.id]),
+        ):
+            response = client.get(url)
+            assert response.status_code == 302
+            assert response["Location"].startswith(LOGIN_URL)
 
 
 # ---------------------------------------------------------------------------

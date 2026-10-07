@@ -1,0 +1,38 @@
+{# Read-only restore list. Context: restores; show_backup (bool) adds the source backup column. #}
+<div class="run-history restore-history">
+    <h3>{{ heading|default:"Restore History" }}</h3>
+
+    {% if restores %}
+    <div class="table-scroll">
+        <table class="runs-table restores-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    {% if show_backup %}<th>From Backup</th>{% endif %}
+                    <th>Status</th>
+                    <th>Started</th>
+                    <th>Duration</th>
+                    <th>Trigger</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for restore in restores %}
+                <tr class="run-row status-{{ restore.status }}">
+                    <td><a href="{% url 'backups:restore_detail' restore.id %}">#{{ restore.id }}</a></td>
+                    {% if show_backup %}<td><a href="{% url 'backups:run_detail' restore.backup_run_id %}">#{{ restore.backup_run_id }}</a></td>{% endif %}
+                    <td><span class="status-badge status-{{ restore.status }}">{{ restore.get_status_display }}</span></td>
+                    <td>{{ restore.started_at|date:"Y-m-d H:i" }}</td>
+                    <td>{% if restore.duration_seconds is not None %}{{ restore.duration_seconds|floatformat:1 }}s{% else %}-{% endif %}</td>
+                    <td>{{ restore.get_trigger_display }}{% if restore.triggered_by %} ({{ restore.triggered_by }}){% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if restores|length >= limit %}
+    <p class="history-note">Showing the {{ limit }} most recent restores.</p>
+    {% endif %}
+    {% else %}
+    <p class="empty-state">{{ empty_text|default:"No restores yet." }}</p>
+    {% endif %}
+</div>

@@ -72,6 +72,7 @@
         <h3>Backup History</h3>
 
         {% if runs %}
+        <div class="table-scroll">
         <table class="runs-table">
             <thead>
                 <tr>
@@ -96,9 +97,12 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
         {% else %}
         <p class="empty-state">No backup runs yet.</p>
         {% endif %}
     </div>
+
+    {% include "backups/partials/restore_history.html" with restores=restores show_backup=True limit=restore_history_limit %}
 </div>
 {% endblock %}

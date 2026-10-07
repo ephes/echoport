@@ -57,6 +57,15 @@ Backup target model note:
   - `service_owned`: service script determines sources; `db_path`/`backup_files` may be empty
 - Default allowed source prefixes include `/home/`, `/opt/`, `/var/lib/`, and `/mnt/cryptdata/`.
 
+## Dashboard
+
+- **Dashboard** (`/`): one card per target with the last backup and a "Backup Now" button.
+- **Target page** (`/targets/<id>/`): configuration, the last 50 backups and the last 20 restores. Each restore row links to its restore page and to the backup it was restored from, with status, start time, duration and who triggered it.
+- **Backup run page** (`/runs/<id>/`): result, logs and the last 20 restores made from that backup. Staff users also see the "Restore Now" action for successful backups.
+- **Restore page** (`/restores/<id>/`): status (polled while running), source backup, logs and errors.
+
+The restore lists are read-only; restores are still started only from a backup run page or with `manage.py restore`.
+
 ## Safe Usage
 
 - **SQLite backups are safe**: service scripts use `sqlite3 .backup` for live SQLite snapshots. Prefer low-traffic windows for large databases.
