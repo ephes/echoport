@@ -31,6 +31,12 @@ Read this before entering values to avoid validation errors.
 - All paths must be absolute and under the allowlist `ECHOPORT_ALLOWED_PATH_PREFIXES` (default: `/home/`, `/opt/`, `/var/lib/`, `/mnt/cryptdata/`). Paths outside the allowlist are rejected.
 - `Backup files` must be a list of paths; in Admin you enter one path per line. For remote targets, each entry must be a directory (not an individual file) — the remote backup script validates this and fails with a clear error otherwise.
 - `Schedule` must be a valid cron expression; leave blank for no scheduled runs.
+  It is evaluated in **UTC**, not in the app's `TIME_ZONE` (Europe/Berlin):
+  `0 2 * * *` runs at 02:00 UTC, which is 04:00 Berlin time in summer and
+  03:00 in winter. UTC avoids DST double runs and skipped runs. The dashboard
+  card and the target page show the cron with a `UTC` label and the next run in
+  local time with its zone (for example `next: Oct 7, 04:00 CEST`);
+  `next_scheduled` in `/api/health/` is ISO-8601 with an explicit offset.
 - `Schedule required` rejects a blank schedule while a target is active. If
   direct database changes bypass validation, the health endpoint reports the
   active target as `missing_schedule` and the overall service as `unhealthy`.
@@ -65,7 +71,7 @@ Read this before entering values to avoid validation errors.
 | Restore owner | Text | No | Blank | `user:group` to chown restored files, max 100 chars | `marina:marina` |
 | Database path | Text | No | Blank | Absolute path under allowlist, max 500 chars. Required for `generic_paths` only when `Backup files` is empty. | `/home/nyxmon/data/db.sqlite3` |
 | Backup files | List (one path per line) | No | Empty list | Absolute paths under allowlist. Required for `generic_paths` only when `Database path` is empty. Remote targets: must be directories. | `/home/nyxmon/uploads` |
-| Schedule | Text | No | Blank | Valid cron expression, max 100 chars | `0 2 * * *` |
+| Schedule | Text | No | Blank | Valid cron expression in UTC, max 100 chars | `0 2 * * *` (02:00 UTC) |
 | Schedule required | Boolean | No | `False` | Enable for targets that must never become manual-only | `True` |
 | Retention days | Integer | No | `30` | Days to keep backups | `14` |
 | Timeout seconds | Integer | No | `600` | Max time to wait for backup | `900` |
