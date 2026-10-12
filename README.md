@@ -239,3 +239,18 @@ just deploy-one echoport
 ```
 
 See [PRD](specs/2026-01-27_initial_prd.md) for deployment architecture details.
+
+## Dependency security checks
+
+The October 2026 refresh updates advisory-affected locked dependencies to patched
+versions. Install the reviewed lock with `uv sync --frozen`; use targeted
+`uv lock --upgrade-package PACKAGE==VERSION` updates rather than upgrading all packages.
+Audit runtime, development and optional dependencies before and after an update:
+
+```shell
+uv export --frozen --all-extras --all-groups --no-emit-project --no-hashes -o /tmp/requirements-audit.txt
+uvx pip-audit -r /tmp/requirements-audit.txt --no-deps --disable-pip
+```
+
+The audit must fail against the vulnerable lock and pass against the refreshed
+lock; rerun the CI checks to verify compatibility.
