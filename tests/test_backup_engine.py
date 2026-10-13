@@ -2,11 +2,12 @@
 Tests for backup engine behavior.
 """
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from django.db import OperationalError
+from django.db import OperationalError, connection, transaction
 
 from backups.backup_engine import (
     BackupError,
@@ -221,6 +222,26 @@ class TestStartBackupGuards:
         assert BackupRun.objects.count() == 0
         assert fake_fastdeploy.started == []
 
+    def test_lock_contention_fails_existing_run(self, short_target, fake_fastdeploy, monkeypatch):
+        monkeypatch.setattr(
+            "backups.backup_engine.connection",
+            SimpleNamespace(features=SimpleNamespace(has_select_for_update=True)),
+        )
+        lock_qs = MagicMock()
+        lock_qs.get.side_effect = OperationalError("database is locked")
+        monkeypatch.setattr(
+            BackupTarget.objects, "select_for_update", MagicMock(return_value=lock_qs)
+        )
+        existing = _pending_backup(short_target)
+
+        with pytest.raises(ConcurrentRestoreError, match="Cannot acquire lock"):
+            start_backup(short_target, existing_run=existing)
+
+        existing.refresh_from_db()
+        assert existing.status == BackupRunStatus.FAILED
+        assert "Cannot acquire lock" in existing.error_message
+        assert fake_fastdeploy.started == []
+
 
 @pytest.mark.django_db
 class TestStartBackupFailures:
@@ -294,3 +315,79 @@ class TestStartBackupFailures:
 
         assert run.status == BackupRunStatus.FAILED
         assert run.error_message == "sqlite busy"
+
+
+def _status_seen_by_another_connection(backup_run):
+    """Read the committed status of a run through a second database connection."""
+    seen = []
+
+    def read():
+        try:
+            seen.append(BackupRun.objects.values_list("status", "error_message").get(pk=backup_run.pk))
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=read)
+    thread.start()
+    thread.join()
+    return seen[0]
+
+
+@pytest.mark.django_db(transaction=True)
+class TestFailedMarkIsCommitted:
+    """
+    A pre-created (UI) run whose backup is refused must end FAILED in the
+    database, visible to other connections - not rolled back to PENDING.
+    These tests use real transactions and no mocks of the database layer.
+    """
+
+    def test_running_restore_fails_existing_run(self, short_target, fake_fastdeploy):
+        source = BackupRun.objects.create(
+            target=short_target, status=BackupRunStatus.SUCCESS, checksum_sha256="d" * 64
+        )
+        RestoreRun.objects.create(
+            backup_run=source, target=short_target, status=RestoreRunStatus.RUNNING
+        )
+        existing = _pending_backup(short_target)
+
+        with pytest.raises(ConcurrentRestoreError, match="Cannot backup while restore"):
+            start_backup(short_target, existing_run=existing)
+
+        status, error_message = _status_seen_by_another_connection(existing)
+        assert status == BackupRunStatus.FAILED
+        assert "Cannot backup while restore" in error_message
+        assert fake_fastdeploy.started == []
+
+    @pytest.mark.skipif(
+        not connection.features.has_select_for_update_nowait,
+        reason="needs a database with row locks (PostgreSQL); see README, Tests",
+    )
+    def test_real_lock_contention_fails_existing_run(self, short_target, fake_fastdeploy):
+        existing = _pending_backup(short_target)
+        locked = threading.Event()
+        release = threading.Event()
+
+        def hold_target_lock():
+            try:
+                with transaction.atomic():
+                    BackupTarget.objects.select_for_update().get(pk=short_target.pk)
+                    locked.set()
+                    release.wait(timeout=30)
+            finally:
+                locked.set()
+                connection.close()
+
+        holder = threading.Thread(target=hold_target_lock)
+        holder.start()
+        try:
+            assert locked.wait(timeout=30)
+            with pytest.raises(ConcurrentRestoreError, match="Cannot acquire lock"):
+                start_backup(short_target, existing_run=existing)
+        finally:
+            release.set()
+            holder.join()
+
+        status, error_message = _status_seen_by_another_connection(existing)
+        assert status == BackupRunStatus.FAILED
+        assert "Cannot acquire lock" in error_message
+        assert fake_fastdeploy.started == []
