@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.contrib.auth.models import User
 from django.urls import reverse
+from pytest_django.asserts import assertContains, assertNotContains
 from django.utils import timezone
 
 from backups import views
@@ -287,6 +288,51 @@ class TestTriggerRestore:
             target=views._run_restore_in_thread, args=(restore.id,), daemon=True
         )
         fake_thread.return_value.start.assert_called_once_with()
+
+    @pytest.mark.parametrize("status", ["paused", "disabled"])
+    def test_inactive_target_is_refused_with_conflict(
+        self, staff_client, backup_run, fake_thread, status
+    ):
+        BackupTarget.objects.filter(pk=backup_run.target_id).update(status=status)
+
+        response = staff_client.post(reverse("backups:trigger_restore", args=[backup_run.id]))
+
+        assert response.status_code == 409
+        assert response.templates[0].name == "backups/run_detail.html"
+        reason = f"Backup target 'view-target' is not active (status: {status})"
+        assert [str(m) for m in response.context["messages"]] == [f"Restore not started. {reason}"]
+        assert RestoreRun.objects.count() == 0
+        fake_thread.assert_not_called()
+
+    def test_refusal_uses_the_rule_of_the_restore_command(
+        self, staff_client, backup_run, fake_thread
+    ):
+        # The view has no status check of its own: it asks the shared function.
+        with patch("backups.views.restore_blocked_reason", return_value="nope") as rule:
+            response = staff_client.post(reverse("backups:trigger_restore", args=[backup_run.id]))
+
+        assert rule.call_args_list[0].args == (backup_run.target,)
+        assert response.status_code == 409
+        assert RestoreRun.objects.count() == 0
+        fake_thread.assert_not_called()
+
+    @pytest.mark.parametrize("status", ["paused", "disabled"])
+    def test_run_detail_offers_no_restore_for_inactive_target(
+        self, staff_client, backup_run, status
+    ):
+        BackupTarget.objects.filter(pk=backup_run.target_id).update(status=status)
+
+        response = staff_client.get(reverse("backups:run_detail", args=[backup_run.id]))
+
+        assert response.status_code == 200
+        assertNotContains(response, "Restore Now")
+        assertNotContains(response, reverse("backups:trigger_restore", args=[backup_run.id]))
+        assertContains(response, f"is not active (status: {status})")
+
+    def test_run_detail_offers_restore_for_active_target(self, staff_client, backup_run):
+        response = staff_client.get(reverse("backups:run_detail", args=[backup_run.id]))
+
+        assertContains(response, reverse("backups:trigger_restore", args=[backup_run.id]))
 
     def test_missing_checksum_creates_no_restore(self, staff_client, backup_run, fake_thread):
         BackupRun.objects.filter(pk=backup_run.pk).update(checksum_sha256="")

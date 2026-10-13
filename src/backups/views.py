@@ -23,6 +23,7 @@ from django.contrib import messages
 from .backup_engine import get_active_run, start_backup, _mark_run_failed
 from .restore_engine import (
     get_active_restore,
+    restore_blocked_reason,
     start_restore,
     _mark_run_failed as _mark_restore_failed,
 )
@@ -136,6 +137,11 @@ def run_detail(request, run_id):
     Show details for a specific backup run.
     """
     run = get_object_or_404(BackupRun.objects.select_related("target"), id=run_id)
+    return _render_run_detail(request, run)
+
+
+def _render_run_detail(request, run, status=200):
+    """Render the backup run page (also used to refuse a restore in place)."""
     target = run.target
     restores = run.restores.order_by("-started_at", "-id")[:RESTORE_HISTORY_LIMIT]
 
@@ -146,9 +152,10 @@ def run_detail(request, run_id):
         "restore_history_limit": RESTORE_HISTORY_LIMIT,
         "active_backup": get_active_run(target),
         "active_restore": get_active_restore(target),
+        "restore_blocked_reason": restore_blocked_reason(target),
     }
 
-    return render(request, "backups/run_detail.html", context)
+    return render(request, "backups/run_detail.html", context, status=status)
 
 
 @login_required
@@ -305,6 +312,14 @@ def trigger_restore(request, run_id):
     )
     target = backup_run.target
     triggered_by = request.user.username
+
+    # Same rule as the restore command: paused and disabled targets cannot be
+    # restored. 409: the request is valid but conflicts with the target's state.
+    blocked_reason = restore_blocked_reason(target)
+    if blocked_reason:
+        logger.warning(f"Restore from backup {run_id} refused: {blocked_reason}")
+        messages.error(request, f"Restore not started. {blocked_reason}")
+        return _render_run_detail(request, backup_run, status=409)
 
     # Block UI self-restore for Echoport's own target — must use CLI command instead.
     # Self-restore stops the echoport service, which would kill this web process
