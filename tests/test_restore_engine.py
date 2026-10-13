@@ -2,11 +2,12 @@
 Tests for the restore engine (start_restore) with a scripted FastDeploy client.
 """
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from django.db import OperationalError
+from django.db import OperationalError, connection, transaction
 
 from backups.fastdeploy_client import (
     DeploymentNotFoundError,
@@ -246,6 +247,20 @@ class TestStartRestorePreconditions:
 
         assert fake_fastdeploy.started == []
 
+    @pytest.mark.parametrize("status", ["paused", "disabled"])
+    def test_inactive_target_is_refused(self, backup_run, fake_fastdeploy, status):
+        BackupTarget.objects.filter(pk=backup_run.target_id).update(status=status)
+        backup_run.target.refresh_from_db()
+        existing = _pending_restore(backup_run)
+
+        with pytest.raises(RestoreError, match=f"is not active \\(status: {status}\\)"):
+            start_restore(backup_run, existing_run=existing)
+
+        existing.refresh_from_db()
+        assert existing.status == RestoreRunStatus.FAILED
+        assert "is not active" in existing.error_message
+        assert fake_fastdeploy.started == []
+
     def test_existing_run_must_be_pending(self, backup_run, fake_fastdeploy):
         existing = _pending_restore(backup_run, status=RestoreRunStatus.FAILED)
 
@@ -285,14 +300,6 @@ class TestStartRestoreRowLock:
         assert RestoreRun.objects.count() == 0
         assert fake_fastdeploy.started == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known gap: on row-locking backends the FAILED mark is written inside "
-            "transaction.atomic() and rolled back with the raised error, leaving the "
-            "UI-created run PENDING. SQLite (the default database) skips this branch."
-        ),
-    )
     def test_lock_contention_fails_existing_run(self, backup_run, fake_fastdeploy, locking_backend):
         locking_backend.get.side_effect = OperationalError("database is locked")
         existing = _pending_restore(backup_run)
@@ -303,6 +310,7 @@ class TestStartRestoreRowLock:
         BackupTarget.objects.select_for_update.assert_called_once_with(nowait=True)
         existing.refresh_from_db()
         assert existing.status == RestoreRunStatus.FAILED
+        assert "Cannot acquire lock" in existing.error_message
         assert fake_fastdeploy.started == []
 
     def test_lock_acquired_creates_run(self, backup_run, fake_fastdeploy, locking_backend):
@@ -481,3 +489,74 @@ class TestHandleDeploymentFinished:
         assert calls == ["close", "save"]
         run.refresh_from_db()
         assert run.status == RestoreRunStatus.SUCCESS
+
+
+def _status_seen_by_another_connection(restore_run):
+    """Read the committed status of a run through a second database connection."""
+    seen = []
+
+    def read():
+        try:
+            seen.append(RestoreRun.objects.values_list("status", "error_message").get(pk=restore_run.pk))
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=read)
+    thread.start()
+    thread.join()
+    return seen[0]
+
+
+@pytest.mark.django_db(transaction=True)
+class TestFailedMarkIsCommitted:
+    """
+    A pre-created (UI) run whose restore is refused must end FAILED in the
+    database, visible to other connections - not rolled back to PENDING.
+    These tests use real transactions and no mocks of the database layer.
+    """
+
+    def test_running_backup_fails_existing_run(self, backup_run, fake_fastdeploy):
+        BackupRun.objects.create(target=backup_run.target, status=BackupRunStatus.RUNNING)
+        existing = _pending_restore(backup_run)
+
+        with pytest.raises(ConcurrentBackupError, match="Cannot restore while backup"):
+            start_restore(backup_run, existing_run=existing)
+
+        status, error_message = _status_seen_by_another_connection(existing)
+        assert status == RestoreRunStatus.FAILED
+        assert "Cannot restore while backup" in error_message
+        assert fake_fastdeploy.started == []
+
+    @pytest.mark.skipif(
+        not connection.features.has_select_for_update_nowait,
+        reason="needs a database with row locks (PostgreSQL); see README, Tests",
+    )
+    def test_real_lock_contention_fails_existing_run(self, backup_run, fake_fastdeploy):
+        existing = _pending_restore(backup_run)
+        locked = threading.Event()
+        release = threading.Event()
+
+        def hold_target_lock():
+            try:
+                with transaction.atomic():
+                    BackupTarget.objects.select_for_update().get(pk=backup_run.target_id)
+                    locked.set()
+                    release.wait(timeout=30)
+            finally:
+                locked.set()
+                connection.close()
+
+        holder = threading.Thread(target=hold_target_lock)
+        holder.start()
+        try:
+            assert locked.wait(timeout=30)
+            with pytest.raises(ConcurrentBackupError, match="Cannot acquire lock"):
+                start_restore(backup_run, existing_run=existing)
+        finally:
+            release.set()
+            holder.join()
+
+        status, error_message = _status_seen_by_another_connection(existing)
+        assert status == RestoreRunStatus.FAILED
+        assert "Cannot acquire lock" in error_message
+        assert fake_fastdeploy.started == []

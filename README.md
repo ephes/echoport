@@ -61,7 +61,7 @@ Backup target model note:
 
 - **Dashboard** (`/`): one card per target with the last backup and a "Backup Now" button.
 - **Target page** (`/targets/<id>/`): configuration, the last 50 backups and the last 20 restores. Each restore row links to its restore page and to the backup it was restored from, with status, start time, duration and who triggered it.
-- **Backup run page** (`/runs/<id>/`): result, logs and the last 20 restores made from that backup. Staff users also see the "Restore Now" action for successful backups.
+- **Backup run page** (`/runs/<id>/`): result, logs and the last 20 restores made from that backup. Staff users also see the "Restore Now" action for successful backups of active targets.
 - **Restore page** (`/restores/<id>/`): status (polled while running), source backup, logs and errors.
 
 The restore lists are read-only; restores are still started only from a backup run page or with `manage.py restore`.
@@ -123,6 +123,12 @@ Run via: `cd src/django && uv run python manage.py <command>`
 Target names are unique regardless of case, but commands look them up exactly
 (`backup Nyxmon` does not run `nyxmon`); a near miss is reported with the
 correctly cased name.
+
+Only active targets can be restored. For a paused or disabled target
+`manage.py restore` exits with an error, the backup run page shows the reason
+instead of "Restore Now", and a restore request sent anyway is answered with
+HTTP 409 and starts nothing. The command, the UI and the restore engine use
+the same check (`restore_blocked_reason` in `backups/restore_engine.py`).
 
 Restoring Echoport's own target is blocked in the web UI because the restore
 stops the running service; use `manage.py restore <target> <backup_run_id>`.
@@ -202,6 +208,22 @@ replaces the client in both engines with a scripted fake (deployment id or start
 error, a sequence of statuses or poll errors) and records poll sleeps instead of
 sleeping. View tests replace `threading.Thread` and capture `on_commit` callbacks,
 so no background backup or restore thread is started.
+
+The suite runs on SQLite, which has no row locks. The restore engine's row-lock
+path has tests against a real PostgreSQL server in
+`TestFailedMarkIsCommitted` (`tests/test_restore_engine.py`); the one that needs
+row locks is skipped on SQLite. To run them, point
+`config.settings.test_postgres` at a disposable server
+(`ECHOPORT_TEST_POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`NAME`, default
+`postgres@127.0.0.1:5432`; Django creates and drops `test_<NAME>`):
+
+```sh
+uv run --with 'psycopg[binary]' pytest --ds=config.settings.test_postgres \
+    tests/test_restore_engine.py -k TestFailedMarkIsCommitted
+```
+
+Only this class is meant to run there: other engine tests rely on SQLite's
+in-memory connection surviving `connection.close()`.
 
 ## Troubleshooting
 

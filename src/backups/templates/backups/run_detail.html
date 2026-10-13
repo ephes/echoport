@@ -98,7 +98,9 @@
             This action cannot be undone.
         </div>
 
-        {% if not run.checksum_sha256 %}
+        {% if restore_blocked_reason %}
+        <p class="restore-blocked">{{ restore_blocked_reason }}. Restores are only possible for active targets.</p>
+        {% elif not run.checksum_sha256 %}
         <p class="restore-blocked">This backup has no checksum and cannot be safely restored.</p>
         {% elif active_backup %}
         <p class="restore-blocked">A backup is currently running. Please wait for it to complete before restoring.</p>

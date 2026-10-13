@@ -23,6 +23,7 @@ from backups.restore_engine import (
     MissingChecksumError,
     RestoreError,
     RestoreTimeoutError,
+    restore_blocked_reason,
     start_restore,
 )
 
@@ -60,10 +61,9 @@ class Command(BaseCommand):
                 f"Backup target '{target_name}' not found.{exact_name_hint(target_name)}"
             )
 
-        if target.status != "active":
-            raise CommandError(
-                f"Backup target '{target_name}' is not active (status: {target.status})"
-            )
+        blocked_reason = restore_blocked_reason(target)
+        if blocked_reason:
+            raise CommandError(blocked_reason)
 
         try:
             backup_run = BackupRun.objects.get(id=backup_run_id, target=target)
