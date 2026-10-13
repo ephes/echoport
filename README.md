@@ -209,20 +209,21 @@ error, a sequence of statuses or poll errors) and records poll sleeps instead of
 sleeping. View tests replace `threading.Thread` and capture `on_commit` callbacks,
 so no background backup or restore thread is started.
 
-The suite runs on SQLite, which has no row locks. The restore engine's row-lock
-path has tests against a real PostgreSQL server in
-`TestFailedMarkIsCommitted` (`tests/test_restore_engine.py`); the one that needs
-row locks is skipped on SQLite. To run them, point
+The suite runs on SQLite, which has no row locks. The row-lock paths of the
+backup and restore engines have tests against a real PostgreSQL server in the
+`TestFailedMarkIsCommitted` classes (`tests/test_backup_engine.py`,
+`tests/test_restore_engine.py`); the ones that need row locks are skipped on
+SQLite. To run them, point
 `config.settings.test_postgres` at a disposable server
 (`ECHOPORT_TEST_POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`NAME`, default
 `postgres@127.0.0.1:5432`; Django creates and drops `test_<NAME>`):
 
 ```sh
 uv run --with 'psycopg[binary]' pytest --ds=config.settings.test_postgres \
-    tests/test_restore_engine.py -k TestFailedMarkIsCommitted
+    tests/test_backup_engine.py tests/test_restore_engine.py -k TestFailedMarkIsCommitted
 ```
 
-Only this class is meant to run there: other engine tests rely on SQLite's
+Only these classes are meant to run there: other engine tests rely on SQLite's
 in-memory connection surviving `connection.close()`.
 
 ## Troubleshooting
