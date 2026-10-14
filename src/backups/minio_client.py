@@ -145,6 +145,132 @@ def delete_object(bucket: str, key: str) -> bool:
         return False
 
 
+def list_prefix(bucket: str, prefix: str) -> list[str] | None:
+    """
+    List object keys below ``<prefix>/`` (recursively).
+
+    Returns the keys (relative to the prefix), an empty list when nothing is
+    stored below it, or None when mc fails. mc also prints nothing and exits 0
+    when the alias is unknown and the path is taken as a missing local
+    directory, so an empty list alone does not prove the alias works.
+    """
+    if not _is_clean_key(prefix):
+        logger.error(f"Refusing to list MinIO prefix {bucket}/{prefix!r}")
+        return None
+
+    mc_path = _get_mc_path()
+    alias = _get_minio_alias()
+    folder = f"{alias}/{bucket}/{prefix}/"
+
+    try:
+        result = subprocess.run(
+            [mc_path, "ls", "--recursive", "--json", folder],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout listing MinIO prefix: {folder}")
+        return None
+    except FileNotFoundError:
+        logger.error(f"mc CLI not found at {mc_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error listing MinIO prefix: {folder} - {e}")
+        return None
+
+    if result.returncode != 0:
+        logger.error(
+            f"Failed to list MinIO prefix: {folder} - "
+            f"stdout: {result.stdout.strip()}, stderr: {result.stderr.strip()}"
+        )
+        return None
+
+    keys = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            logger.error(f"Unexpected mc ls output for {folder}: {line}")
+            return None
+        if not isinstance(data, dict) or data.get("status") != "success":
+            logger.error(f"mc ls reported an error for {folder}: {line}")
+            return None
+        keys.append(str(data.get("key", "")))
+    return keys
+
+
+def _is_clean_key(key: str) -> bool:
+    """
+    True for a key without leading/trailing slash or empty, "." or ".." segments.
+
+    Prefix operations act on exactly ``<key>/``; odd spellings such as
+    ``a/b/`` are refused instead of normalized, so the shared-key check in
+    cleanup and the mc path always mean the same prefix.
+    """
+    return bool(key) and all(seg not in ("", ".", "..") for seg in key.split("/"))
+
+
+def delete_prefix(bucket: str, prefix: str) -> bool:
+    """
+    Delete everything below ``<prefix>/`` and verify the prefix is empty.
+
+    ``mc rm`` on a prefix without a trailing slash and without ``--recursive``
+    reports success but deletes nothing, so this runs
+    ``mc rm --recursive --force <alias>/<bucket>/<prefix>/`` and then lists
+    the prefix again. Returns True only when the listing is empty.
+    """
+    # At least <target>/<run>: an empty prefix would empty the bucket and a
+    # single segment would remove every run of a target (and its rolling
+    # current/ objects).
+    if not _is_clean_key(prefix) or len(prefix.split("/")) < 2:
+        logger.error(f"Refusing recursive delete of MinIO prefix {bucket}/{prefix!r}")
+        return False
+
+    mc_path = _get_mc_path()
+    alias = _get_minio_alias()
+    folder = f"{alias}/{bucket}/{prefix}/"
+
+    try:
+        result = subprocess.run(
+            [mc_path, "rm", "--recursive", "--force", "--json", folder],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout deleting MinIO prefix: {folder}")
+        return False
+    except FileNotFoundError:
+        logger.error(f"mc CLI not found at {mc_path}")
+        return False
+    except Exception as e:
+        logger.error(f"Error deleting MinIO prefix: {folder} - {e}")
+        return False
+
+    if result.returncode != 0:
+        logger.error(
+            f"Failed to delete MinIO prefix: {folder} - "
+            f"stdout: {result.stdout.strip()}, stderr: {result.stderr.strip()}"
+        )
+        return False
+
+    remaining = list_prefix(bucket, prefix)
+    if remaining is None:
+        return False
+    if remaining:
+        logger.error(
+            f"MinIO prefix not empty after delete: {folder} "
+            f"({len(remaining)} object(s) left, e.g. {remaining[0]})"
+        )
+        return False
+
+    logger.info(f"Deleted prefix from MinIO: {folder}")
+    return True
+
+
 def object_exists(bucket: str, key: str) -> bool:
     """
     Check if an object exists in MinIO.

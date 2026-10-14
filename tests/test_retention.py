@@ -19,6 +19,18 @@ from backups.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_prefix_below_keys(request):
+    """Command tests treat keys as plain objects unless a test says otherwise."""
+    if request.node.get_closest_marker("real_list_prefix"):
+        yield None
+        return
+    with patch(
+        "backups.management.commands.cleanup_old_backups.list_prefix", return_value=[]
+    ) as mock_list:
+        yield mock_list
+
+
 @pytest.fixture
 def target_with_retention(db):
     """Create a test backup target with 7-day retention."""
@@ -845,3 +857,244 @@ class TestCleanupMissingAndSharedObjects:
         assert len(lines) == 2
         assert "MinIO object kept" in lines[0]
         assert "MinIO object kept" not in lines[1]
+
+
+MANIFEST_LINE = (
+    '{"status":"success","type":"file","lastModified":"2026-10-13T01:45:30Z","size":2,'
+    '"key":"manifest.json","url":"http://127.0.0.1:9001/backups/python-podcast-media/'
+    '2026-10-13T01-45-02/","versionOrdinal":1,"storageClass":"STANDARD"}'
+)
+
+
+class TestMinioPrefix:
+    """mc calls for media targets, which store a prefix as storage_key."""
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_list_prefix_lists_below_trailing_slash(self, mock_run):
+        from backups.minio_client import list_prefix
+
+        mock_run.return_value = MagicMock(returncode=0, stdout=MANIFEST_LINE + "\n", stderr="")
+
+        assert list_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") == ["manifest.json"]
+        assert mock_run.call_args[0][0][1:] == [
+            "ls",
+            "--recursive",
+            "--json",
+            "minio/backups/python-podcast-media/2026-10-13T01-45-02/",
+        ]
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_list_prefix_empty_and_errors(self, mock_run):
+        from backups.minio_client import list_prefix
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        assert list_prefix("backups", "a/b") == []
+
+        no_bucket = (
+            '{"status":"error","error":{"message":"Unable to list folder.","cause":'
+            '{"message":"The specified bucket does not exist","error":{"Code":"NoSuchBucket"}},'
+            '"type":"error"}}'
+        )
+        mock_run.return_value = MagicMock(returncode=1, stdout=no_bucket, stderr="")
+        assert list_prefix("backups", "a/b") is None
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
+        assert list_prefix("backups", "a/b") is None
+
+    @pytest.mark.parametrize("prefix", ["", "/", "//", "a/b/", "/a", "a//b", "a/.."])
+    @patch("backups.minio_client.subprocess.run")
+    def test_list_prefix_refuses_root_and_odd_keys(self, mock_run, prefix):
+        from backups.minio_client import list_prefix
+
+        assert list_prefix("backups", prefix) is None
+        mock_run.assert_not_called()
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_delete_prefix_recursive_with_trailing_slash_then_verifies(self, mock_run):
+        from backups.minio_client import delete_prefix
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout='{"status":"success"}', stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") is True
+        rm_args = mock_run.call_args_list[0][0][0]
+        assert rm_args[1:] == [
+            "rm",
+            "--recursive",
+            "--force",
+            "--json",
+            "minio/backups/python-podcast-media/2026-10-13T01-45-02/",
+        ]
+        assert mock_run.call_args_list[1][0][0][1] == "ls"
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_delete_prefix_fails_when_objects_remain(self, mock_run):
+        from backups.minio_client import delete_prefix
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout=MANIFEST_LINE, stderr=""),
+        ]
+
+        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") is False
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_delete_prefix_fails_on_mc_error(self, mock_run):
+        from backups.minio_client import delete_prefix
+
+        mock_run.return_value = MagicMock(returncode=1, stdout='{"status":"error"}', stderr="")
+
+        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") is False
+        assert mock_run.call_count == 1
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["", "/", "python-podcast-media", "python-podcast-media/", "a//b", "a/../b", "./a", "a/b/", "/a/b"],
+    )
+    @patch("backups.minio_client.subprocess.run")
+    def test_delete_prefix_refuses_root_and_target_level_prefixes(self, mock_run, prefix):
+        from backups.minio_client import delete_prefix
+
+        assert delete_prefix("backups", prefix) is False
+        mock_run.assert_not_called()
+
+
+def _completed(stdout="", returncode=0):
+    return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+
+
+@pytest.mark.real_list_prefix
+class TestCleanupPrefixTargets:
+    """Command-level tests for media runs whose storage_key is a prefix."""
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_prefix_is_deleted_recursively_then_row(self, mock_run, target_with_retention, capsys):
+        backup = _old_run(target_with_retention, "python-podcast-media/2026-02-27T01-45-02")
+        mock_run.side_effect = [
+            _completed(MANIFEST_LINE),  # ls: something below the prefix
+            _completed('{"status":"success"}'),  # rm --recursive --force
+            _completed(""),  # ls: prefix empty
+        ]
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 0
+        assert not BackupRun.objects.filter(pk=backup.pk).exists()
+        commands = [c[0][0][1:] for c in mock_run.call_args_list]
+        assert commands[1] == [
+            "rm",
+            "--recursive",
+            "--force",
+            "--json",
+            "minio/backups/python-podcast-media/2026-02-27T01-45-02/",
+        ]
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_row_kept_when_prefix_not_empty_after_delete(self, mock_run, target_with_retention, capsys):
+        backup = _old_run(target_with_retention, "python-podcast-media/2026-02-27T01-45-02")
+        mock_run.side_effect = [_completed(MANIFEST_LINE), _completed(""), _completed(MANIFEST_LINE)]
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 1
+        assert BackupRun.objects.filter(pk=backup.pk).exists()
+        assert "Failed to delete from MinIO" in capsys.readouterr().err
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_row_kept_for_target_level_prefix(self, mock_run, target_with_retention, capsys):
+        """A one-segment key with objects below it is never deleted recursively."""
+        backup = _old_run(target_with_retention, "python-podcast-media")
+        mock_run.return_value = _completed(MANIFEST_LINE)
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 1
+        assert BackupRun.objects.filter(pk=backup.pk).exists()
+        assert all(c[0][0][1] == "ls" for c in mock_run.call_args_list)
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_empty_prefix_falls_back_to_object_delete(self, mock_run, target_with_retention):
+        """An already empty prefix (nothing below it) goes through mc rm; not-found counts as deleted."""
+        backup = _old_run(target_with_retention, "python-podcast-media/2026-02-24T21-55-16")
+        mock_run.side_effect = [_completed(""), _completed(TestMinioClient.REAL_MC_NOT_FOUND, returncode=1)]
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 0
+        assert not BackupRun.objects.filter(pk=backup.pk).exists()
+        assert mock_run.call_args_list[1][0][0][1:] == [
+            "rm",
+            "--json",
+            "minio/backups/python-podcast-media/2026-02-24T21-55-16",
+        ]
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_list_failure_keeps_row(self, mock_run, target_with_retention):
+        backup = _old_run(target_with_retention, "python-podcast-media/2026-02-27T01-45-02")
+        mock_run.return_value = _completed('{"status":"error"}', returncode=1)
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 1
+        assert BackupRun.objects.filter(pk=backup.pk).exists()
+        assert mock_run.call_count == 1
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_run_and_prefix_kept_while_a_run_is_stored_below_it(
+        self, mock_run, target_with_retention, capsys
+    ):
+        """Neither the prefix nor its row goes while another run lives below it."""
+        parent = _old_run(target_with_retention, "media/2026-02-27")
+        _old_run(target_with_retention, "media/2026-02-27/nested.tar.gz", days=0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 0
+        mock_run.assert_not_called()
+        assert BackupRun.objects.filter(pk=parent.pk).exists()
+        assert "1 skipped" in capsys.readouterr().out
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_parent_prefix_deleted_after_the_nested_run(self, mock_run, target_with_retention):
+        """Oldest first: once the nested run is gone, the parent prefix is deleted in a later pass."""
+        parent = _old_run(target_with_retention, "media/2026-02-27", days=12)
+        nested = _old_run(target_with_retention, "media/2026-02-27/nested.tar.gz", days=10)
+        mock_run.side_effect = [
+            _completed(""),  # nested: nothing below it
+            _completed('{"status":"success"}'),  # nested: mc rm object
+        ]
+
+        with pytest.raises(SystemExit):
+            Command().handle(dry_run=False, target=None)
+
+        assert BackupRun.objects.filter(pk=parent.pk).exists()
+        assert not BackupRun.objects.filter(pk=nested.pk).exists()
+
+        mock_run.side_effect = [_completed(MANIFEST_LINE), _completed(""), _completed("")]
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 0
+        assert not BackupRun.objects.filter(pk=parent.pk).exists()
+        assert mock_run.call_args_list[-2][0][0][-1] == "minio/backups/media/2026-02-27/"
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_trailing_slash_key_is_refused_not_normalized(self, mock_run, target_with_retention):
+        """A key spelled "a/b/" never reaches mc, so it cannot delete the storage of a run keyed "a/b"."""
+        odd = _old_run(target_with_retention, "media/2026-02-27/", days=12)
+        kept = _old_run(target_with_retention, "media/2026-02-27", days=0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 1
+        mock_run.assert_not_called()
+        assert BackupRun.objects.filter(pk__in=[odd.pk, kept.pk]).count() == 2
