@@ -532,7 +532,11 @@ class TestMinioClient:
 
     @patch("backups.minio_client.subprocess.run")
     def test_delete_object_not_found_nosuchkey(self, mock_run):
-        """delete_object treats NoSuchKey error as success (idempotent)."""
+        """delete_object treats NoSuchKey error as success (idempotent).
+
+        Synthetic S3-style shape kept for compatibility; real mc does not
+        print it (see test_delete_object_not_found_real_mc_shape).
+        """
         from backups.minio_client import delete_object
 
         # mc --json outputs JSON with NoSuchKey error code
@@ -545,7 +549,11 @@ class TestMinioClient:
 
     @patch("backups.minio_client.subprocess.run")
     def test_delete_object_not_found_message_fallback(self, mock_run):
-        """delete_object falls back to message check if no error code."""
+        """delete_object accepts an exact top-level "Object does not exist." message.
+
+        Synthetic shape kept for compatibility; real mc puts the text in
+        error.cause.message.
+        """
         from backups.minio_client import delete_object
 
         # JSON without error code but with "object does not exist" message
@@ -668,3 +676,172 @@ class TestMinioClient:
         result = delete_object("backups", "test/backup.tar.gz")
 
         assert result is True
+
+    # Exact mc output from production cleanup.log on 2026-10-14
+    # (mc RELEASE.2025-08-13T08-35-41Z against MinIO RELEASE.2025-10-15), rc 1.
+    REAL_MC_NOT_FOUND = (
+        '{"status":"error","error":{"message":"Failed to remove '
+        '`minio/backups/python-podcast-media/2026-02-24T21-55-16`.",'
+        '"cause":{"message":"Object does not exist","error":{}},"type":"error"}}'
+    )
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_delete_object_not_found_real_mc_shape(self, mock_run):
+        """The real mc not-found output counts as already deleted."""
+        from backups.minio_client import delete_object
+
+        mock_run.return_value = MagicMock(returncode=1, stdout=self.REAL_MC_NOT_FOUND, stderr="")
+
+        assert delete_object("backups", "python-podcast-media/2026-02-24T21-55-16") is True
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_delete_object_unknown_alias_is_error(self, mock_run):
+        """An unknown mc alias ("Requested path ... not found") stays an error."""
+        from backups.minio_client import delete_object
+
+        error_json = (
+            '{"status":"error","error":{"message":"Failed to remove '
+            '`minio/backups/x`.","cause":{"message":"Requested path '
+            '`/home/echoport/site/minio/backups/x` not found","error":'
+            '{"Path":"/home/echoport/site/minio/backups/x"}},"type":"error"}}'
+        )
+        mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
+
+        assert delete_object("backups", "x") is False
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_delete_object_missing_bucket_real_shape_is_error(self, mock_run):
+        """A missing bucket ("Bucket `x` does not exist.") stays an error."""
+        from backups.minio_client import delete_object
+
+        error_json = (
+            '{"status":"error","error":{"message":"Failed to remove '
+            '`minio/backups/x`.","cause":{"message":"Bucket `backups` does not exist.",'
+            '"error":{"Bucket":"backups"}},"type":"error"}}'
+        )
+        mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
+
+        assert delete_object("backups", "x") is False
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("Object does not exist", True),
+            ("Object does not exist.", True),
+            ("  OBJECT DOES NOT EXIST.  ", True),
+            ("Object does not exist in bucket", False),
+            ("Requested path `/object does not exist` not found", False),
+            ("Bucket `x` does not exist.", False),
+            ("", False),
+        ],
+    )
+    def test_not_found_message_is_an_exact_match(self, message, expected):
+        """Only the exact text matches, in cause.message or error.message."""
+        import json
+
+        from backups.minio_client import _is_object_not_found_error
+
+        in_cause = {"status": "error", "error": {"message": "x", "cause": {"message": message, "error": {}}}}
+        in_error = {"status": "error", "error": {"message": message, "cause": {}}}
+        assert _is_object_not_found_error(json.dumps(in_cause)) is expected
+        assert _is_object_not_found_error(json.dumps(in_error)) is expected
+
+
+def _old_run(target, key, days=10, bucket="backups"):
+    run = BackupRun.objects.create(
+        target=target,
+        status=BackupRunStatus.SUCCESS,
+        storage_bucket=bucket,
+        storage_key=key,
+    )
+    run.finished_at = timezone.now() - timedelta(days=days)
+    run.save()
+    return run
+
+
+class TestCleanupMissingAndSharedObjects:
+    """Command-level tests for missing objects and keys shared by several runs."""
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_real_not_found_output_deletes_row_and_exits_zero(
+        self, mock_run, target_with_retention, capsys
+    ):
+        """A row whose object is already gone is removed and the run exits 0."""
+        backup = _old_run(target_with_retention, "retention-test/2026-01-01T02-00-00.tar.gz")
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout=TestMinioClient.REAL_MC_NOT_FOUND, stderr=""
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 0
+        assert not BackupRun.objects.filter(pk=backup.pk).exists()
+        assert "Complete: 1 deleted" in capsys.readouterr().out
+
+    @patch("backups.management.commands.cleanup_old_backups.delete_object")
+    def test_shared_key_kept_while_a_kept_run_uses_it(
+        self, mock_delete, target_with_retention, capsys
+    ):
+        """Old rows sharing the newest run's key are removed without deleting the object."""
+        old = [_old_run(target_with_retention, ".tar.gz", days=d) for d in (12, 11, 10)]
+        newest = _old_run(target_with_retention, ".tar.gz", days=0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 0
+        mock_delete.assert_not_called()
+        assert not BackupRun.objects.filter(pk__in=[r.pk for r in old]).exists()
+        assert BackupRun.objects.filter(pk=newest.pk).exists()
+        out = capsys.readouterr().out
+        assert f"Keeping MinIO object backups/.tar.gz: still used by backup(s) {newest.pk}" in out
+
+    @patch("backups.management.commands.cleanup_old_backups.delete_object")
+    def test_shared_key_deleted_with_the_last_row(
+        self, mock_delete, target_with_retention
+    ):
+        """When every run sharing a key expires, the object goes with the last row."""
+        mock_delete.return_value = True
+        first = _old_run(target_with_retention, ".tar.gz", days=12)
+        last = _old_run(target_with_retention, ".tar.gz", days=10)
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+
+        assert exc_info.value.code == 0
+        mock_delete.assert_called_once_with("backups", ".tar.gz")
+        assert not BackupRun.objects.filter(pk__in=[first.pk, last.pk]).exists()
+
+    @patch("backups.management.commands.cleanup_old_backups.delete_object")
+    def test_same_key_in_another_bucket_is_not_shared(
+        self, mock_delete, target_with_retention
+    ):
+        """Only bucket and key together identify the object."""
+        mock_delete.return_value = True
+        old = _old_run(target_with_retention, "k.tar.gz", days=10, bucket="backups")
+        _old_run(target_with_retention, "k.tar.gz", days=0, bucket="other")
+
+        with pytest.raises(SystemExit):
+            Command().handle(dry_run=False, target=None)
+
+        mock_delete.assert_called_once_with("backups", "k.tar.gz")
+        assert not BackupRun.objects.filter(pk=old.pk).exists()
+
+    @patch("backups.management.commands.cleanup_old_backups.delete_object")
+    def test_dry_run_reports_kept_shared_object(
+        self, mock_delete, target_with_retention, capsys
+    ):
+        """Dry run says which object is kept, and that the last expired row would delete it."""
+        _old_run(target_with_retention, "shared.tar.gz", days=12)
+        _old_run(target_with_retention, "shared.tar.gz", days=10)
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=True, target=None)
+
+        assert exc_info.value.code == 0
+        mock_delete.assert_not_called()
+        lines = [line for line in capsys.readouterr().out.splitlines() if "Would delete" in line]
+        assert len(lines) == 2
+        assert "MinIO object kept" in lines[0]
+        assert "MinIO object kept" not in lines[1]
