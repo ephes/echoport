@@ -202,29 +202,37 @@ printed or rendered.
 Run `just test` (or `.venv/bin/pytest`); `just check` adds lint and type checking.
 Lint uses the ruff version locked in the dev dependencies (`uv run ruff check .`).
 GitHub Actions (`.github/workflows/ci.yml`) runs the same lint, mypy and pytest
-steps on every push and pull request; no secrets or services are needed.
+steps on every push and pull request, plus the test suite on PostgreSQL;
+no secrets are needed.
 Tests never contact FastDeploy: the `fake_fastdeploy` fixture in `tests/conftest.py`
 replaces the client in both engines with a scripted fake (deployment id or start
 error, a sequence of statuses or poll errors) and records poll sleeps instead of
 sleeping. View tests replace `threading.Thread` and capture `on_commit` callbacks,
 so no background backup or restore thread is started.
 
-The suite runs on SQLite, which has no row locks. The row-lock paths of the
-backup and restore engines have tests against a real PostgreSQL server in the
-`TestFailedMarkIsCommitted` classes (`tests/test_backup_engine.py`,
-`tests/test_restore_engine.py`); the ones that need row locks are skipped on
-SQLite. To run them, point
-`config.settings.test_postgres` at a disposable server
+The suite runs on SQLite by default. SQLite has no row locks, so the two
+tests that need them (`test_real_lock_contention_fails_existing_run` in
+`tests/test_backup_engine.py` and `tests/test_restore_engine.py`) are skipped
+there. The whole suite also runs against PostgreSQL, where nothing is skipped;
+CI runs it in a second job against a `postgres:17` service container. To run it
+locally, point `config.settings.test_postgres` at a disposable server
 (`ECHOPORT_TEST_POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`NAME`, default
 `postgres@127.0.0.1:5432`; Django creates and drops `test_<NAME>`):
 
 ```sh
-uv run --with 'psycopg[binary]' pytest --ds=config.settings.test_postgres \
-    tests/test_backup_engine.py tests/test_restore_engine.py -k TestFailedMarkIsCommitted
+docker run -d --name echoport-test-pg -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -p 127.0.0.1:5432:5432 postgres:17
+uv run --with 'psycopg[binary]' pytest --ds=config.settings.test_postgres
+docker rm -f echoport-test-pg
 ```
 
-Only these classes are meant to run there: other engine tests rely on SQLite's
-in-memory connection surviving `connection.close()`.
+The engines and view thread bodies close their database connection, which is
+right in their background threads but would drop the test transaction when a
+test calls them directly. The autouse `keep_test_transaction_connection`
+fixture in `tests/conftest.py` therefore ignores `close()` on the test's
+connection while it is inside an atomic block (Django already ignores it for
+in-memory SQLite). Tests marked `django_db(transaction=True)`, such as the
+`TestFailedMarkIsCommitted` classes, run outside one and close for real.
 
 ## Troubleshooting
 

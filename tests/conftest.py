@@ -123,3 +123,29 @@ def fake_fastdeploy(monkeypatch, settings):
     # the requested intervals instead of sleeping.
     monkeypatch.setattr("backups.backup_engine.time.sleep", fake.sleeps.append)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def keep_test_transaction_connection(monkeypatch):
+    """
+    Keep the test's database connection open while its test transaction runs.
+
+    The engines and view thread bodies close the connection
+    (close_old_connections(), connection.close()) because in production they
+    run in their own thread. Called directly from a test they would close the
+    connection that holds the test transaction, and every later query fails.
+    SQLite never notices: Django does not close in-memory SQLite connections.
+    This makes close() a no-op inside an atomic block on any database, so the
+    suite behaves the same on PostgreSQL. Outside an atomic block (tests with
+    transaction=True) and in other threads, close() still closes.
+    """
+    from django.db import connections
+
+    conn = connections["default"]
+    real_close = conn.close
+
+    def close():
+        if not conn.in_atomic_block:
+            real_close()
+
+    monkeypatch.setattr(conn, "close", close)
