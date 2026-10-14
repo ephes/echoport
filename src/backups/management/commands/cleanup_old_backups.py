@@ -3,7 +3,8 @@ Management command to clean up old backups based on retention policy.
 
 This command is designed to be run from cron (e.g., daily at 3am).
 It removes backups older than the target's retention_days setting,
-deleting from MinIO first then from the database.
+deleting from MinIO first then from the database. A MinIO object that
+another backup run still references is kept; only the expired row goes.
 
 Usage:
     python manage.py cleanup_old_backups
@@ -47,6 +48,11 @@ class DeleteResult(Enum):
     DELETED = "deleted"  # Successfully deleted from MinIO and DB
     SKIPPED = "skipped"  # Skipped (lock contention, RestoreRun exists, already deleted)
     ERROR = "error"  # Failed to delete
+
+
+def _format_ids(ids: list[int], limit: int = 5) -> str:
+    shown = ", ".join(str(i) for i in ids[:limit])
+    return f"{shown} and {len(ids) - limit} more" if len(ids) > limit else shown
 
 
 def _get_lock_file_path() -> Path:
@@ -98,6 +104,27 @@ def get_backups_to_delete(target: BackupTarget, now=None) -> list[BackupRun]:
     )
 
     return list(backups)
+
+
+def other_runs_sharing_object(
+    backup: BackupRun, bucket: str, key: str, ignore_ids: set[int] | None = None
+) -> list[int]:
+    """
+    Return ids of other backup runs that still point to the same MinIO object.
+
+    Retention must not delete an object another kept run still uses. This
+    guards against shared keys such as the FastDeploy runs that were all
+    written to ``backups/.tar.gz``: deleting the oldest row would remove the
+    newest archive. The object is deleted only together with the last row
+    that references it.
+    """
+    exclude_ids = {backup.pk} | (ignore_ids or set())
+    return list(
+        BackupRun.objects.filter(storage_bucket=bucket, storage_key=key)
+        .exclude(pk__in=exclude_ids)
+        .order_by("pk")
+        .values_list("pk", flat=True)
+    )
 
 
 class Command(BaseCommand):
@@ -277,6 +304,7 @@ class Command(BaseCommand):
         deleted = 0
         skipped = 0
         errors = 0
+        dry_run_deleted_ids: set[int] = set()
 
         for backup in backups:
             # finished_at is guaranteed non-null by the query filter
@@ -291,10 +319,19 @@ class Command(BaseCommand):
                     )
                     errors += 1
                 else:
+                    sharing = other_runs_sharing_object(
+                        backup, backup.storage_bucket, backup.storage_key, dry_run_deleted_ids
+                    )
+                    note = (
+                        f" (MinIO object kept: still used by backup(s) {_format_ids(sharing)})"
+                        if sharing
+                        else ""
+                    )
                     self.stdout.write(
                         f"  [DRY RUN] Would delete '{target.name}' backup from "
-                        f"{finished_str}: {backup.storage_key}"
+                        f"{finished_str}: {backup.storage_key}{note}"
                     )
+                    dry_run_deleted_ids.add(backup.pk)
                     deleted += 1
             else:
                 result = self._delete_backup(backup)
@@ -376,13 +413,8 @@ class Command(BaseCommand):
                     )
                     return DeleteResult.SKIPPED
 
-                # Delete from MinIO first
-                if not delete_object(storage_bucket, storage_key):
-                    self.stderr.write(
-                        self.style.ERROR(
-                            f"  Failed to delete from MinIO: {storage_bucket}/{storage_key}"
-                        )
-                    )
+                # Delete from MinIO first, unless another run still uses the object
+                if not self._delete_object_unless_shared(locked_backup, storage_bucket, storage_key):
                     return DeleteResult.ERROR
 
                 # Delete from database (inside transaction, lock held)
@@ -402,6 +434,34 @@ class Command(BaseCommand):
                 )
             )
             return DeleteResult.ERROR
+
+    def _delete_object_unless_shared(
+        self, backup: BackupRun, storage_bucket: str, storage_key: str
+    ) -> bool:
+        """
+        Delete the backup's MinIO object unless another run still references it.
+
+        Returns True when the DB row may be deleted (object deleted, already
+        gone, or kept for another run), False on a MinIO failure.
+        """
+        sharing = other_runs_sharing_object(backup, storage_bucket, storage_key)
+        if sharing:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"  Keeping MinIO object {storage_bucket}/{storage_key}: "
+                    f"still used by backup(s) {_format_ids(sharing)}"
+                )
+            )
+            return True
+
+        if not delete_object(storage_bucket, storage_key):
+            self.stderr.write(
+                self.style.ERROR(
+                    f"  Failed to delete from MinIO: {storage_bucket}/{storage_key}"
+                )
+            )
+            return False
+        return True
 
     def _delete_backup_simple(
         self, backup: BackupRun, target_name: str, storage_bucket: str, storage_key: str
@@ -430,13 +490,8 @@ class Command(BaseCommand):
             )
             return DeleteResult.SKIPPED
 
-        # Delete from MinIO first
-        if not delete_object(storage_bucket, storage_key):
-            self.stderr.write(
-                self.style.ERROR(
-                    f"  Failed to delete from MinIO: {storage_bucket}/{storage_key}"
-                )
-            )
+        # Delete from MinIO first, unless another run still uses the object
+        if not self._delete_object_unless_shared(current_backup, storage_bucket, storage_key):
             return DeleteResult.ERROR
 
         # Delete from database

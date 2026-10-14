@@ -25,6 +25,16 @@ def _get_minio_alias() -> str:
     return getattr(settings, "MINIO_ALIAS", "minio")
 
 
+_OBJECT_NOT_FOUND_MESSAGE = "object does not exist"
+
+
+def _is_object_not_found_message(message: object) -> bool:
+    """Exact, case-insensitive match on mc's "Object does not exist" text."""
+    if not isinstance(message, str):
+        return False
+    return message.strip().rstrip(".").strip().lower() == _OBJECT_NOT_FOUND_MESSAGE
+
+
 def _is_object_not_found_error(output: str) -> bool:
     """
     Check if mc --json output indicates an object-not-found error.
@@ -33,8 +43,16 @@ def _is_object_not_found_error(output: str) -> bool:
     because the object was already deleted, without false positives for
     bucket/alias/host errors.
 
-    mc rm --json outputs lines like:
-    {"status":"error","error":{"message":"Object does not exist.","cause":{"error":{"Code":"NoSuchKey",...}}}}
+    Real mc (verified for releases from 2025-01 to 2026-09, including the
+    production mc 2025-08-13) prints, with exit code 1:
+    {"status":"error","error":{"message":"Failed to remove `minio/b/k`.",
+     "cause":{"message":"Object does not exist","error":{}},"type":"error"}}
+
+    An S3-style ``cause.error.Code == "NoSuchKey"`` is accepted as well.
+    The message must equal "Object does not exist" (case-insensitive, a
+    trailing "." ignored); a substring match is not enough, so an unknown
+    alias ("Requested path ... not found") or a missing bucket
+    ("Bucket `x` does not exist.") stays an error.
 
     Note: mc may emit non-JSON lines (warnings, progress) mixed with JSON.
     We parse each line separately and continue scanning on decode errors.
@@ -51,17 +69,17 @@ def _is_object_not_found_error(output: str) -> bool:
 
         try:
             if data.get("status") == "error":
-                error = data.get("error", {})
-                cause = error.get("cause", {}).get("error", {})
+                error = data.get("error") or {}
+                cause = error.get("cause") or {}
+                cause_error = cause.get("error") or {}
 
-                # Check for S3 NoSuchKey error code (most reliable)
-                if cause.get("Code") == "NoSuchKey":
+                # S3 NoSuchKey error code
+                if cause_error.get("Code") == "NoSuchKey":
                     return True
 
-                # Fallback: check message for object-specific patterns
-                # These are more specific than generic "not found"
-                message = error.get("message", "").lower()
-                if "object does not exist" in message:
+                if _is_object_not_found_message(cause.get("message")) or (
+                    _is_object_not_found_message(error.get("message"))
+                ):
                     return True
         except (KeyError, TypeError, AttributeError):
             # Malformed JSON structure - skip and continue

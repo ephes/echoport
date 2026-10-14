@@ -113,7 +113,7 @@ chmod 600 .env  # Restrict .env permissions
 |---------|-------------|
 | `backup <target>` | Run manual backup for a target |
 | `run_scheduled_backups` | Reap stale runs, record late archives of timed-out backups, then check and run due scheduled backups (cron); `--reap-only` only reaps |
-| `cleanup_old_backups` | Delete backups older than retention_days |
+| `cleanup_old_backups` | Delete backups older than retention_days (see Retention cleanup) |
 | `check_service_tokens` | Report FastDeploy service tokens that are legacy, expiring, expired or unusable; exits 1 if any need attention (`--warn-days`, default 21) |
 | `create_devdata` | Create development backup targets |
 | `ensure_superuser` | Create/update admin user (deployment) |
@@ -166,6 +166,24 @@ archive's storage key, size, checksum and file count are recorded on the run
 and its error message says so, so the archive is not left unreferenced. The
 run stays `timeout`. A deployment still running, or one FastDeploy cannot be
 reached for, is retried on the next pass.
+
+### Retention cleanup
+
+`cleanup_old_backups` (cron, daily at 03:00) removes successful runs older than
+the target's `retention_days` that no restore references: it deletes the MinIO
+object with `mc rm --json`, then the database row. A failed MinIO delete keeps
+the row and makes the run exit 1.
+
+- An object that is already gone counts as deleted. mc reports that with
+  exit 1 and `"cause":{"message":"Object does not exist","error":{}}`; Echoport
+  accepts exactly that message (in `error.cause.message` or `error.message`,
+  case-insensitive, trailing `.` ignored) or an S3 `NoSuchKey` code. Other
+  errors, such as an unknown mc alias ("Requested path ... not found") or a
+  missing bucket ("Bucket `x` does not exist."), stay errors.
+- A MinIO object still referenced by another run (same bucket and key) is not
+  deleted; only the expired row is removed, and the output names the runs that
+  still use it. The object goes with the last row that references it. This
+  protects the newest archive when several runs share one key.
 
 ### Service token expiry
 
