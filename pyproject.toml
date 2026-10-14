@@ -50,6 +50,9 @@ pythonpath = [
     "src/django",
     "src",
 ]
+markers = [
+    "real_list_prefix: cleanup tests that run the real list_prefix (mocked mc) instead of the default empty listing",
+]
 
 [tool.mypy]
 files = ["src/"]

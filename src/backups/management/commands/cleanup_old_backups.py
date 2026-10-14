@@ -5,6 +5,8 @@ This command is designed to be run from cron (e.g., daily at 3am).
 It removes backups older than the target's retention_days setting,
 deleting from MinIO first then from the database. A MinIO object that
 another backup run still references is kept; only the expired row goes.
+Prefix keys (media targets) are deleted recursively and must be empty
+before the row is removed.
 
 Usage:
     python manage.py cleanup_old_backups
@@ -29,7 +31,7 @@ from django.db import OperationalError, connection, transaction
 from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
-from backups.minio_client import delete_object
+from backups.minio_client import delete_object, delete_prefix, list_prefix
 from backups.models import (
     BackupRun,
     BackupRunStatus,
@@ -121,6 +123,24 @@ def other_runs_sharing_object(
     exclude_ids = {backup.pk} | (ignore_ids or set())
     return list(
         BackupRun.objects.filter(storage_bucket=bucket, storage_key=key)
+        .exclude(pk__in=exclude_ids)
+        .order_by("pk")
+        .values_list("pk", flat=True)
+    )
+
+
+def runs_stored_below(
+    backup: BackupRun, bucket: str, key: str, ignore_ids: set[int] | None = None
+) -> list[int]:
+    """
+    Return ids of other backup runs whose key lies below ``<key>/``.
+
+    A prefix is deleted recursively, which would take their data with it, so
+    the expired run is left alone (row and storage) until they are gone.
+    """
+    exclude_ids = {backup.pk} | (ignore_ids or set())
+    return list(
+        BackupRun.objects.filter(storage_bucket=bucket, storage_key__startswith=f"{key}/")
         .exclude(pk__in=exclude_ids)
         .order_by("pk")
         .values_list("pk", flat=True)
@@ -250,6 +270,8 @@ class Command(BaseCommand):
             parts = []
             if total_deleted > 0:
                 parts.append(f"{total_deleted} would be deleted")
+            if total_skipped > 0:
+                parts.append(f"{total_skipped} would be skipped")
             if total_errors > 0:
                 parts.append(f"{total_errors} would error")
             summary = ", ".join(parts) if parts else "no backups to clean up"
@@ -318,6 +340,15 @@ class Command(BaseCommand):
                         )
                     )
                     errors += 1
+                elif below := runs_stored_below(
+                    backup, backup.storage_bucket, backup.storage_key, dry_run_deleted_ids
+                ):
+                    self.stdout.write(
+                        f"  [DRY RUN] Would skip '{target.name}' backup from "
+                        f"{finished_str}: {backup.storage_key} (backup(s) "
+                        f"{_format_ids(below)} stored below it)"
+                    )
+                    skipped += 1
                 else:
                     sharing = other_runs_sharing_object(
                         backup, backup.storage_bucket, backup.storage_key, dry_run_deleted_ids
@@ -414,8 +445,9 @@ class Command(BaseCommand):
                     return DeleteResult.SKIPPED
 
                 # Delete from MinIO first, unless another run still uses the object
-                if not self._delete_object_unless_shared(locked_backup, storage_bucket, storage_key):
-                    return DeleteResult.ERROR
+                outcome = self._delete_storage(locked_backup, storage_bucket, storage_key)
+                if outcome is not DeleteResult.DELETED:
+                    return outcome
 
                 # Delete from database (inside transaction, lock held)
                 finished_str = locked_backup.finished_at.strftime('%Y-%m-%d %H:%M') if locked_backup.finished_at else "unknown"
@@ -435,15 +467,27 @@ class Command(BaseCommand):
             )
             return DeleteResult.ERROR
 
-    def _delete_object_unless_shared(
+    def _delete_storage(
         self, backup: BackupRun, storage_bucket: str, storage_key: str
-    ) -> bool:
+    ) -> DeleteResult:
         """
-        Delete the backup's MinIO object unless another run still references it.
+        Delete the backup's MinIO object or prefix unless another run needs it.
 
-        Returns True when the DB row may be deleted (object deleted, already
-        gone, or kept for another run), False on a MinIO failure.
+        Returns DELETED when the DB row may be deleted (storage deleted,
+        already gone, or kept for a run with the same key), SKIPPED when other
+        runs are stored below the key (row and storage stay), and ERROR on a
+        MinIO failure or a prefix that is not empty after the delete.
         """
+        below = runs_stored_below(backup, storage_bucket, storage_key)
+        if below:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"  Skipping backup {backup.pk}: backup(s) {_format_ids(below)} "
+                    f"are stored below {storage_bucket}/{storage_key}/"
+                )
+            )
+            return DeleteResult.SKIPPED
+
         sharing = other_runs_sharing_object(backup, storage_bucket, storage_key)
         if sharing:
             self.stdout.write(
@@ -452,16 +496,27 @@ class Command(BaseCommand):
                     f"still used by backup(s) {_format_ids(sharing)}"
                 )
             )
-            return True
+            return DeleteResult.DELETED
 
-        if not delete_object(storage_bucket, storage_key):
+        # Media targets store a prefix (<target>/<timestamp>) instead of an
+        # object key. Anything stored below "<key>/" marks such a prefix; it
+        # is deleted recursively and must be empty afterwards.
+        stored = list_prefix(storage_bucket, storage_key)
+        if stored is None:
+            deleted = False
+        elif stored:
+            deleted = delete_prefix(storage_bucket, storage_key)
+        else:
+            deleted = delete_object(storage_bucket, storage_key)
+
+        if not deleted:
             self.stderr.write(
                 self.style.ERROR(
                     f"  Failed to delete from MinIO: {storage_bucket}/{storage_key}"
                 )
             )
-            return False
-        return True
+            return DeleteResult.ERROR
+        return DeleteResult.DELETED
 
     def _delete_backup_simple(
         self, backup: BackupRun, target_name: str, storage_bucket: str, storage_key: str
@@ -491,8 +546,9 @@ class Command(BaseCommand):
             return DeleteResult.SKIPPED
 
         # Delete from MinIO first, unless another run still uses the object
-        if not self._delete_object_unless_shared(current_backup, storage_bucket, storage_key):
-            return DeleteResult.ERROR
+        outcome = self._delete_storage(current_backup, storage_bucket, storage_key)
+        if outcome is not DeleteResult.DELETED:
+            return outcome
 
         # Delete from database
         try:

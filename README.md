@@ -180,10 +180,22 @@ the row and makes the run exit 1.
   case-insensitive, trailing `.` ignored) or an S3 `NoSuchKey` code. Other
   errors, such as an unknown mc alias ("Requested path ... not found") or a
   missing bucket ("Bucket `x` does not exist."), stay errors.
+- Media targets store a prefix (`<target>/<timestamp>`, holding the run's
+  manifest) instead of an object key. `mc rm` on such a prefix without a
+  trailing slash reports success but deletes nothing, so cleanup first lists
+  `<key>/`. If anything is stored below it, cleanup runs
+  `mc rm --recursive --force <alias>/<bucket>/<key>/`, lists the prefix again
+  and deletes the row only when it is empty. It refuses (error, row kept) a
+  recursive delete of an empty prefix, the bucket root or a single-segment
+  prefix such as `<target>`, which would also remove the rolling `current/`
+  objects, and any key with a leading or trailing `/` or an empty, `.` or `..`
+  segment. A key with nothing below it is deleted as a single object.
 - A MinIO object still referenced by another run (same bucket and key) is not
   deleted; only the expired row is removed, and the output names the runs that
   still use it. The object goes with the last row that references it. This
   protects the newest archive when several runs share one key.
+- A run with other runs stored below `<key>/` is skipped (row and storage
+  kept) until those runs are gone.
 
 ### Service token expiry
 
