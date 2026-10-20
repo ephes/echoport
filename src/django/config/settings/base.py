@@ -241,3 +241,6 @@ LOGGING = {
         },
     },
 }
+
+# Minimum recorded successful recovery points retained per target.
+ECHOPORT_RETENTION_MIN_SUCCESS = env.int("ECHOPORT_RETENTION_MIN_SUCCESS", default=3)

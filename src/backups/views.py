@@ -24,6 +24,7 @@ from .backup_engine import get_active_run, start_backup, _mark_run_failed
 from .restore_engine import (
     get_active_restore,
     restore_blocked_reason,
+    reserve_restore,
     start_restore,
     _mark_run_failed as _mark_restore_failed,
 )
@@ -35,8 +36,6 @@ from .models import (
     BackupTarget,
     BackupTrigger,
     RestoreRun,
-    RestoreRunStatus,
-    RestoreTrigger,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,7 +94,12 @@ def dashboard(request):
         runs = list(target.runs.all())  # Uses prefetched data, no new query
         target.last_run = runs[0] if runs else None
         target.last_success = next(
-            (r for r in runs if r.status == BackupRunStatus.SUCCESS), None
+            (
+                r
+                for r in runs
+                if r.status == BackupRunStatus.SUCCESS and r.deletion_pending_at is None
+            ),
+            None,
         )
         target.active_run = next(
             (r for r in runs if r.status in [BackupRunStatus.PENDING, BackupRunStatus.RUNNING]),
@@ -356,13 +360,7 @@ def trigger_restore(request, run_id):
     restore_run = None
     try:
         # Create PENDING restore run synchronously so UI shows it immediately
-        restore_run = RestoreRun.objects.create(
-            backup_run=backup_run,
-            target=target,
-            status=RestoreRunStatus.PENDING,
-            trigger=RestoreTrigger.MANUAL,
-            triggered_by=triggered_by,
-        )
+        restore_run = reserve_restore(backup_run.pk, triggered_by)
         logger.info(f"Created restore run {restore_run.id} from backup {backup_run.id}")
 
         # Medium: Use transaction.on_commit to ensure the run is visible
@@ -502,7 +500,12 @@ def health_status(request):
         runs = list(target.runs.all())  # Prefetched, newest first
         last_run = runs[0] if runs else None
         last_success = next(
-            (r for r in runs if r.status == BackupRunStatus.SUCCESS), None
+            (
+                r
+                for r in runs
+                if r.status == BackupRunStatus.SUCCESS and r.deletion_pending_at is None
+            ),
+            None,
         )
         active_run = next(
             (

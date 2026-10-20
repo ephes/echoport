@@ -132,6 +132,23 @@ class TestHealthEndpoint:
         response = client.get(reverse("backups:health_status"))
         assert response.status_code == 200
 
+    def test_deletion_pending_success_is_not_last_success(self, client, active_target):
+        """A backup marked for deletion is no longer a usable recovery point."""
+        older = BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.SUCCESS,
+            finished_at=timezone.now() - timedelta(days=2),
+        )
+        BackupRun.objects.create(
+            target=active_target,
+            status=BackupRunStatus.SUCCESS,
+            finished_at=timezone.now() - timedelta(days=1),
+            deletion_pending_at=timezone.now(),
+        )
+        data = json.loads(client.get(reverse("backups:health_status")).content)
+        info = data["targets_by_name"][active_target.name]
+        assert info["last_successful_backup"] == older.started_at.isoformat()
+
     def test_health_endpoint_returns_json(self, client):
         """Health endpoint should return JSON."""
         response = client.get(reverse("backups:health_status"))

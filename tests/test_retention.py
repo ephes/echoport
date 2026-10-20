@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.utils import timezone
 
+from backups import reservations
 from backups.management.commands.cleanup_old_backups import Command, get_backups_to_delete
 from backups.models import (
     BackupRun,
@@ -17,6 +18,14 @@ from backups.models import (
     RestoreRun,
     RestoreRunStatus,
 )
+
+
+pytestmark = pytest.mark.django_db(transaction=True)
+
+
+@pytest.fixture(autouse=True)
+def age_only_storage_tests(settings):
+    settings.ECHOPORT_RETENTION_MIN_SUCCESS = 0
 
 
 @pytest.fixture(autouse=True)
@@ -82,11 +91,10 @@ def recent_successful_backup(target_with_retention):
 class TestGetBackupsToDelete:
     """Tests for the get_backups_to_delete function."""
 
-    def test_returns_old_successful_backups(self, target_with_retention, old_successful_backup):
-        """Old successful backups should be returned for deletion."""
-        backups = get_backups_to_delete(target_with_retention)
-        assert len(backups) == 1
-        assert backups[0] == old_successful_backup
+    def test_keeps_lone_expired_success(self, settings, target_with_retention, old_successful_backup):
+        """The default floor replaces the former age-only deletion policy."""
+        settings.ECHOPORT_RETENTION_MIN_SUCCESS = 3
+        assert get_backups_to_delete(target_with_retention) == []
 
     def test_excludes_recent_backups(
         self, target_with_retention, old_successful_backup, recent_successful_backup
@@ -446,21 +454,20 @@ class TestCleanupCommand:
         assert "Skipping" in captured.out
 
     @patch("backups.management.commands.cleanup_old_backups.delete_object")
-    @patch("backups.management.commands.cleanup_old_backups.connection")
     def test_skips_on_lock_contention(
-        self, mock_connection, mock_delete, target_with_retention, old_successful_backup, capsys
+        self, mock_delete, target_with_retention, old_successful_backup, capsys
     ):
         """Should skip backup gracefully when target is locked by another operation."""
         from django.db import OperationalError
 
         # Simulate PostgreSQL with select_for_update support
-        mock_connection.features.has_select_for_update = True
+        # Shared writer guard contention must skip before external deletion.
 
         # Make select_for_update raise OperationalError (lock contention)
         with patch.object(
-            BackupTarget.objects, "select_for_update"
+            reservations, "lock_target"
         ) as mock_select:
-            mock_select.return_value.get.side_effect = OperationalError("could not obtain lock")
+            mock_select.side_effect = OperationalError("could not obtain lock")
 
             command = Command()
             with pytest.raises(SystemExit) as exc_info:

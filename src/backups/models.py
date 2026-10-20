@@ -312,7 +312,7 @@ class BackupTarget(models.Model):
 
     def get_last_successful_run(self):
         """Get the most recent successful backup run for this target."""
-        return self.runs.filter(status=BackupRunStatus.SUCCESS).order_by("-started_at").first()
+        return self.runs.filter(status=BackupRunStatus.SUCCESS, deletion_pending_at__isnull=True).order_by("-started_at").first()
 
     def get_last_run(self):
         """Get the most recent backup run for this target."""
@@ -390,6 +390,8 @@ class BackupRun(models.Model):
         null=True,
         blank=True,
     )
+    deletion_pending_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     checksum_sha256 = models.CharField(
         max_length=64,
         blank=True,
