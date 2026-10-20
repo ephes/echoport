@@ -16,6 +16,10 @@
         <span class="status-badge status-{{ run.status }}">{{ run.get_status_display }}</span>
     </div>
 
+    {% if run.deletion_pending_at %}
+    <p class="restore-blocked">Deletion pending since {{ run.deletion_pending_at|date:"Y-m-d H:i:s" }}. This backup cannot be restored.</p>
+    {% endif %}
+
     <div class="run-summary">
         <dl>
             <dt>Target</dt>
@@ -98,7 +102,9 @@
             This action cannot be undone.
         </div>
 
-        {% if restore_blocked_reason %}
+        {% if run.deletion_pending_at %}
+        <p class="restore-blocked">Deletion pending. This backup cannot be restored.</p>
+        {% elif restore_blocked_reason %}
         <p class="restore-blocked">{{ restore_blocked_reason }}. Restores are only possible for active targets.</p>
         {% elif not run.checksum_sha256 %}
         <p class="restore-blocked">This backup has no checksum and cannot be safely restored.</p>

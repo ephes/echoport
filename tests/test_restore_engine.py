@@ -270,6 +270,19 @@ class TestStartRestorePreconditions:
         assert fake_fastdeploy.started == []
 
 
+    def test_duplicate_continuation_does_not_fail_running_restore(self, backup_run, fake_fastdeploy):
+        existing = _pending_restore(backup_run)
+        stale = RestoreRun.objects.get(pk=existing.pk)
+        RestoreRun.objects.filter(pk=existing.pk).update(status=RestoreRunStatus.RUNNING)
+
+        with pytest.raises(RestoreError, match="no longer pending"):
+            start_restore(backup_run, existing_run=stale)
+
+        existing.refresh_from_db()
+        assert existing.status == RestoreRunStatus.RUNNING
+        assert existing.finished_at is None
+        assert fake_fastdeploy.started == []
+
 @pytest.mark.django_db
 class TestStartRestoreRowLock:
     """
@@ -283,7 +296,7 @@ class TestStartRestoreRowLock:
             features=SimpleNamespace(has_select_for_update=True),
             close=lambda: None,
         )
-        monkeypatch.setattr("backups.restore_engine.connection", fake_connection)
+        monkeypatch.setattr("backups.reservations.connection", fake_connection)
         lock_qs = MagicMock()
         monkeypatch.setattr(
             BackupTarget.objects, "select_for_update", MagicMock(return_value=lock_qs)
@@ -318,7 +331,7 @@ class TestStartRestoreRowLock:
 
         run = start_restore(backup_run)
 
-        locking_backend.get.assert_called_once_with(id=backup_run.target_id)
+        locking_backend.get.assert_called_once_with(pk=backup_run.target_id)
         assert run.status == RestoreRunStatus.SUCCESS
 
 

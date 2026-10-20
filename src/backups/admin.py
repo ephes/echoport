@@ -232,7 +232,7 @@ class BackupRunAdmin(admin.ModelAdmin):
     readonly_fields = [
         "target", "status", "trigger", "triggered_by",
         "fastdeploy_deployment_id", "storage_bucket", "storage_key",
-        "size_bytes", "checksum_sha256", "file_count",
+        "size_bytes", "checksum_sha256", "file_count", "deletion_pending_at",
         "error_message", "logs", "started_at", "finished_at",
     ]
 

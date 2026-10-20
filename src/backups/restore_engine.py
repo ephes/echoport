@@ -95,6 +95,59 @@ def restore_blocked_reason(target: BackupTarget) -> str | None:
     return None
 
 
+def reserve_restore(
+    backup_id: int, triggered_by: str = "", existing_run: RestoreRun | None = None
+) -> RestoreRun:
+    """Validate fresh state and reserve PENDING under the cleanup writer guard."""
+    from .reservations import lock_target
+
+    try:
+        # This lookup only identifies the lock; all decisions use fresh rows below.
+        target_id = BackupRun.objects.values_list("target_id", flat=True).get(pk=backup_id)
+        with transaction.atomic():
+            lock_target(target_id)
+            backup = BackupRun.objects.select_related("target").get(pk=backup_id)
+            target = backup.target
+            if target.pk != target_id:
+                raise RestoreError("Backup target changed; retry restore")
+            reason = restore_blocked_reason(target)
+            if reason:
+                raise RestoreError(reason)
+            if backup.deletion_pending_at:
+                raise RestoreError(f"Backup {backup_id} is pending deletion and cannot be restored")
+            if backup.status != BackupRunStatus.SUCCESS:
+                raise RestoreError(f"Cannot restore from backup run {backup_id} with status '{backup.status}'")
+            if not backup.checksum_sha256:
+                raise MissingChecksumError(f"Cannot restore from backup run {backup_id}: missing checksum for integrity verification")
+            if not backup.storage_bucket or not backup.storage_key:
+                raise RestoreError("Backup has missing storage coordinates")
+            active_backup = _get_active_backup(target)
+            if active_backup:
+                raise ConcurrentBackupError(f"Cannot restore while backup {active_backup.id} is running for target '{target.name}'")
+            if existing_run:
+                current = RestoreRun.objects.get(pk=existing_run.pk)
+                if current.backup_run_id != backup_id:
+                    raise RestoreError(f"existing_run {current.id} is for backup {current.backup_run_id}, not {backup_id}")
+                if current.target_id != target_id:
+                    raise RestoreError(f"existing_run {current.id} target mismatch")
+                if current.status != RestoreRunStatus.PENDING:
+                    raise RestoreError(f"existing_run {current.id} has status '{current.status}', expected 'pending'; no longer pending")
+                current.backup_run = backup
+                return current
+            if get_active_restore(target):
+                raise ConcurrentRestoreError(f"A restore is already running for target '{target.name}'")
+            return RestoreRun.objects.create(
+                backup_run=backup, target=target, status=RestoreRunStatus.PENDING,
+                trigger=RestoreTrigger.MANUAL, triggered_by=triggered_by,
+            )
+    except (BackupRun.DoesNotExist, RestoreRun.DoesNotExist) as error:
+        raise RestoreError("Backup or restore reservation no longer exists") from error
+    except OperationalError as error:
+        raise ConcurrentBackupError(f"Cannot acquire lock for restore: {error}") from error
+    except IntegrityError as error:
+        raise ConcurrentRestoreError("A restore is already running for this target") from error
+
+
 def start_restore(
     backup_run: BackupRun,
     triggered_by: str = "",
@@ -136,91 +189,22 @@ def start_restore(
     # The mark is written here, after the atomic block below has rolled back:
     # written inside it, it would be rolled back together with the error.
     try:
-        blocked_reason = restore_blocked_reason(target)
-        if blocked_reason:
-            raise RestoreError(blocked_reason)
-
-        # Validate backup run is restorable
-        if backup_run.status != BackupRunStatus.SUCCESS:
-            raise RestoreError(
-                f"Cannot restore from backup run {backup_run.id} with status '{backup_run.status}'"
-            )
-
-        # High: Require checksum for restore integrity verification
-        if not backup_run.checksum_sha256:
-            raise MissingChecksumError(
-                f"Cannot restore from backup run {backup_run.id}: missing checksum for integrity verification"
-            )
-
-        # High: Cross-lock check and run creation must be atomic to prevent races.
-        # Use select_for_update within a transaction to serialize backup/restore operations.
-        # Fall back to simple check on SQLite which doesn't support select_for_update.
-        def _get_or_create_run_with_lock() -> RestoreRun:
-            """Validate/create run while holding the lock."""
-            # Check for concurrent backup
-            active_backup = _get_active_backup(target)
-            if active_backup:
-                raise ConcurrentBackupError(
-                    f"Cannot restore while backup {active_backup.id} is running for target '{target.name}'"
-                )
-
-            if existing_run:
-                # Validate the existing run is usable
-                if existing_run.backup_run_id != backup_run.id:
-                    raise RestoreError(
-                        f"existing_run {existing_run.id} is for backup {existing_run.backup_run_id}, "
-                        f"not {backup_run.id}"
-                    )
-                if existing_run.target_id != target.id:
-                    raise RestoreError(
-                        f"existing_run {existing_run.id} target mismatch: "
-                        f"expected '{target.name}', got target_id {existing_run.target_id}"
-                    )
-                if existing_run.status != RestoreRunStatus.PENDING:
-                    raise RestoreError(
-                        f"existing_run {existing_run.id} has status '{existing_run.status}', "
-                        f"expected '{RestoreRunStatus.PENDING}'"
-                    )
-                logger.info(f"Continuing restore run {existing_run.id} for backup {backup_run.id}")
-                return existing_run
-            else:
-                # Create the restore run record
-                try:
-                    new_run = RestoreRun.objects.create(
-                        backup_run=backup_run,
-                        target=target,
-                        status=RestoreRunStatus.PENDING,
-                        trigger=RestoreTrigger.MANUAL,
-                        triggered_by=triggered_by,
-                    )
-                    logger.info(f"Created restore run {new_run.id} for backup {backup_run.id}")
-                    return new_run
-                except IntegrityError as e:
-                    logger.warning(f"Concurrent restore prevented for target '{target.name}': {e}")
-                    raise ConcurrentRestoreError(
-                        f"A restore is already running for target '{target.name}'"
-                    ) from e
-
-        if connection.features.has_select_for_update:
-            with transaction.atomic():
-                # Lock the target row to serialize backup/restore operations
-                # Narrow exception handling to only the lock acquisition
-                try:
-                    BackupTarget.objects.select_for_update(nowait=True).get(id=target.id)
-                except OperationalError as e:
-                    # select_for_update(nowait=True) raises OperationalError on lock contention
-                    raise ConcurrentBackupError(
-                        f"Cannot acquire lock on target '{target.name}' - another operation may be in progress: {e}"
-                    ) from e
-                # Run creation happens inside atomic block but outside lock try/except
-                # so other DB errors bubble up naturally
-                run = _get_or_create_run_with_lock()
-        else:
-            # SQLite fallback: no row locking, but unique constraints still prevent concurrent same-type ops
-            run = _get_or_create_run_with_lock()
+        run = reserve_restore(backup_run.pk, triggered_by, existing_run)
+        backup_run = run.backup_run
+        target = backup_run.target
     except RestoreError as error:
         if existing_run:
-            _mark_run_failed(existing_run, str(error))
+            # Only a reservation that is still PENDING failed here; a duplicate
+            # continuation must not fail a restore another worker is running.
+            existing_run.status = RestoreRunStatus.FAILED
+            existing_run.error_message = str(error)
+            existing_run.finished_at = timezone.now()
+            save_if_still_active(
+                existing_run,
+                (RestoreRunStatus.PENDING,),
+                ["status", "error_message", "finished_at"],
+                insert_if_missing=False,
+            )
         raise
 
     try:
