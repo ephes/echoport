@@ -1,0 +1,10 @@
+{
+  "revision": "51678035ef9c2b1299b4229220118ff7e7fbb7eb",
+  "sha256": {
+    "src/backups/views.py": "2debe1c5014a3134851760b55967b05a6f0bd0dba2cf6cb325e360bd0e1bb487",
+    "src/backups/restore_engine.py": "e24688a92b713ef81cc5a3989d61e2dbad3988d9d1c60321fbfad16e3ded4050",
+    "src/backups/models.py": "48179913c40531835e843b8a0fc3306f4197c6cba28af7ac8d4a92f202bae56e",
+    "src/backups/management/commands/cleanup_old_backups.py": "326de0a43d0ef714f8d332cc097f281ee5fb58d694e2c8cdec5330f46d78e2e0",
+    "src/backups/minio_client.py": "70507edad2f8bca5960501af2ddd1d37d8e89dfedcdccf19527959e3fc6ee548"
+  }
+}
