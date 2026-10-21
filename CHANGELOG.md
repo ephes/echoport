@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Update the locked certifi CA bundle to 2026.10.19 for the eMudhra/emSign
+  CA compromise
+  ([GHSA-6q48-6c7w-9gw2](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2)).
+  Lock-only change. Re-sync deployed environments and restart long-running
+  processes so they load the new bundle.
 - Retain at least the newest three completed recorded SUCCESS backups per target
   beyond age retention. Configure with `ECHOPORT_RETENTION_MIN_SUCCESS` (default
   `3`); failures and deletion-pending records do not displace retained successes.
