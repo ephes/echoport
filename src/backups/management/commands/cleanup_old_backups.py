@@ -27,8 +27,8 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.db import OperationalError, connection, transaction
-from django.db.models import Exists, OuterRef
+from django.db import OperationalError, transaction
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from backups.minio_client import delete_object, delete_prefix, list_prefix
@@ -70,6 +70,16 @@ def _get_lock_file_path() -> Path:
     return Path("/tmp/echoport-cleanup.lock")
 
 
+def protected_success_ids(target: BackupTarget) -> list[int]:
+    """Newest completed, unmarked recorded successes; failures never displace them."""
+    floor = max(0, settings.ECHOPORT_RETENTION_MIN_SUCCESS)
+    return list(BackupRun.objects.filter(
+        target=target, status=BackupRunStatus.SUCCESS, deletion_pending_at__isnull=True,
+        finished_at__isnull=False,
+    )
+        .order_by("-finished_at", "-pk").values_list("pk", flat=True)[:floor])
+
+
 def get_backups_to_delete(target: BackupTarget, now=None) -> list[BackupRun]:
     """
     Get list of backups eligible for deletion based on retention policy.
@@ -95,14 +105,12 @@ def get_backups_to_delete(target: BackupTarget, now=None) -> list[BackupRun]:
     has_restores = RestoreRun.objects.filter(backup_run=OuterRef("pk"))
 
     backups = (
-        BackupRun.objects.filter(
-            target=target,
-            status=BackupRunStatus.SUCCESS,
-            finished_at__lt=cutoff,
-        )
+        BackupRun.objects.filter(target=target, status=BackupRunStatus.SUCCESS)
+        .filter(Q(deletion_pending_at__isnull=False) | Q(finished_at__lt=cutoff))
+        .exclude(pk__in=protected_success_ids(target))
         .annotate(has_restore_runs=Exists(has_restores))
         .filter(has_restore_runs=False)
-        .order_by("finished_at")
+        .order_by("finished_at", "pk")
     )
 
     return list(backups)
@@ -376,95 +384,60 @@ class Command(BaseCommand):
         return deleted, skipped, errors
 
     def _delete_backup(self, backup: BackupRun) -> DeleteResult:
-        """
-        Delete a single backup from MinIO and database.
+        """Commit intent, delete storage outside a transaction, then finalize metadata."""
+        from backups.reservations import lock_target
 
-        Uses a transaction with select_for_update on BackupTarget to serialize
-        with restore operations (which also lock BackupTarget). This prevents
-        race conditions where a RestoreRun is created while we're deleting.
-
-        Note: The BackupTarget lock is held while executing mc rm (up to 60s timeout).
-        This blocks new backup/restore starts for that target during cleanup.
-        Acceptable for scheduled 3am runs; be aware if running ad-hoc.
-
-        Deletes from MinIO first, then from database.
-        If MinIO deletion fails, database record is preserved.
-
-        Returns DeleteResult enum indicating outcome.
-        """
-        target = backup.target
-        target_name = target.name
-        storage_key = backup.storage_key
-        storage_bucket = backup.storage_bucket
-
-        # Require storage info - if missing, this is a data integrity issue
-        # that should be investigated, not silently cleaned up
-        if not storage_key or not storage_bucket:
-            self.stderr.write(
-                self.style.ERROR(
-                    f"  Backup {backup.id} for '{target_name}' has missing storage info "
-                    f"(bucket={storage_bucket!r}, key={storage_key!r}) - skipping to avoid orphans"
-                )
-            )
-            return DeleteResult.ERROR
-
-        # SQLite doesn't support select_for_update - fall back to simple re-check
-        if not connection.features.has_select_for_update:
-            return self._delete_backup_simple(backup, target_name, storage_bucket, storage_key)
-
+        intent_committed = False
         try:
-            with transaction.atomic():
-                # Lock BackupTarget to serialize with restore operations
-                # (restore_engine also locks BackupTarget, so this prevents races)
-                try:
-                    BackupTarget.objects.select_for_update(nowait=True).get(pk=target.pk)
-                except OperationalError:
-                    # Lock contention - another backup/restore operation is in progress
-                    # Skip this backup, will retry on next cleanup run
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f"  Skipping backup {backup.id} - target '{target_name}' is locked "
-                            f"(backup/restore in progress)"
-                        )
-                    )
+            # durable disallows an enclosing application transaction: intent must
+            # be committed before touching storage, including on interruption.
+            with transaction.atomic(durable=True):
+                lock_target(backup.target_id)
+                current = BackupRun.objects.select_related("target").filter(pk=backup.pk).first()
+                if current is None:
                     return DeleteResult.SKIPPED
-
-                # Re-check the backup still exists
-                locked_backup = BackupRun.objects.filter(pk=backup.pk).first()
-                if locked_backup is None:
-                    logger.info(f"Backup {backup.id} already deleted")
+                if current.target_id != backup.target_id:
+                    return DeleteResult.ERROR
+                if RestoreRun.objects.filter(backup_run=current).exists():
+                    self.stdout.write(f"  Skipping backup {backup.pk} - RestoreRun exists")
                     return DeleteResult.SKIPPED
-
-                # Re-check for RestoreRuns (defense in depth)
-                if RestoreRun.objects.filter(backup_run=locked_backup).exists():
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f"  Skipping backup {backup.id} - RestoreRun was created after initial query"
-                        )
-                    )
+                if not current.storage_bucket or not current.storage_key:
+                    self.stderr.write(f"  Backup {backup.pk} has missing storage info")
+                    return DeleteResult.ERROR
+                if current.status != BackupRunStatus.SUCCESS:
                     return DeleteResult.SKIPPED
-
-                # Delete from MinIO first, unless another run still uses the object
-                outcome = self._delete_storage(locked_backup, storage_bucket, storage_key)
-                if outcome is not DeleteResult.DELETED:
-                    return outcome
-
-                # Delete from database (inside transaction, lock held)
-                finished_str = locked_backup.finished_at.strftime('%Y-%m-%d %H:%M') if locked_backup.finished_at else "unknown"
-                locked_backup.delete()
-                self.stdout.write(
-                    f"  Deleted '{target_name}' backup from "
-                    f"{finished_str}: {storage_key}"
-                )
-                return DeleteResult.DELETED
-
-        except Exception as e:
-            # PROTECT FK violation or other DB error
-            self.stderr.write(
-                self.style.ERROR(
-                    f"  Failed to delete backup {backup.id}: {e}"
-                )
-            )
+                if current.deletion_pending_at is None:
+                    cutoff = timezone.now() - timedelta(days=current.target.retention_days)
+                    if (current.finished_at is None or current.finished_at >= cutoff
+                            or current.pk in protected_success_ids(current.target)):
+                        return DeleteResult.SKIPPED
+                    if runs_stored_below(current, current.storage_bucket, current.storage_key):
+                        self.stdout.write(f"  Skipping backup {backup.pk} - other runs stored below it")
+                        return DeleteResult.SKIPPED
+                    current.deletion_pending_at = timezone.now()
+                    current.save(update_fields=["deletion_pending_at"])
+                identity = (current.storage_bucket, current.storage_key, current.deletion_pending_at)
+            intent_committed = True
+            outcome = self._delete_storage(current, identity[0], identity[1])
+            if outcome is not DeleteResult.DELETED:
+                return outcome
+            with transaction.atomic(durable=True):
+                lock_target(current.target_id)
+                final = BackupRun.objects.get(pk=current.pk)
+                if ((final.storage_bucket, final.storage_key, final.deletion_pending_at) != identity
+                        or RestoreRun.objects.filter(backup_run=final).exists()):
+                    raise ValueError("Deletion intent drift or unexpected restore reference; reconcile manually")
+                final.delete()
+            self.stdout.write(f"  Deleted '{current.target.name}' backup: {identity[1]}")
+            return DeleteResult.DELETED
+        except OperationalError as error:
+            if intent_committed:
+                self.stderr.write(f"  Failed to finalize deletion for backup {backup.pk}: {error}")
+                return DeleteResult.ERROR
+            self.stdout.write(f"  Skipping backup {backup.pk} - locked: {error}")
+            return DeleteResult.SKIPPED
+        except Exception as error:
+            self.stderr.write(f"  Failed to delete backup {backup.pk}: {error}")
             return DeleteResult.ERROR
 
     def _delete_storage(
@@ -517,53 +490,3 @@ class Command(BaseCommand):
             )
             return DeleteResult.ERROR
         return DeleteResult.DELETED
-
-    def _delete_backup_simple(
-        self, backup: BackupRun, target_name: str, storage_bucket: str, storage_key: str
-    ) -> DeleteResult:
-        """
-        Simplified deletion for databases without select_for_update (SQLite).
-
-        Still does the re-check for RestoreRuns, but can't prevent the race
-        condition entirely. The PROTECT FK will catch it if a RestoreRun
-        is created between check and delete.
-        """
-        backup_id = backup.pk
-
-        # Re-check the backup still exists
-        current_backup = BackupRun.objects.filter(pk=backup_id).first()
-        if current_backup is None:
-            logger.info(f"Backup {backup_id} already deleted")
-            return DeleteResult.SKIPPED
-
-        # Re-check for RestoreRuns
-        if RestoreRun.objects.filter(backup_run=current_backup).exists():
-            self.stdout.write(
-                self.style.WARNING(
-                    f"  Skipping backup {backup_id} - RestoreRun exists"
-                )
-            )
-            return DeleteResult.SKIPPED
-
-        # Delete from MinIO first, unless another run still uses the object
-        outcome = self._delete_storage(current_backup, storage_bucket, storage_key)
-        if outcome is not DeleteResult.DELETED:
-            return outcome
-
-        # Delete from database
-        try:
-            finished_str = current_backup.finished_at.strftime('%Y-%m-%d %H:%M') if current_backup.finished_at else "unknown"
-            current_backup.delete()
-            self.stdout.write(
-                f"  Deleted '{target_name}' backup from "
-                f"{finished_str}: {storage_key}"
-            )
-            return DeleteResult.DELETED
-        except Exception as e:
-            # PROTECT FK violation - MinIO object is now orphaned
-            self.stderr.write(
-                self.style.ERROR(
-                    f"  MinIO object deleted but DB delete failed for backup {backup_id}: {e}"
-                )
-            )
-            return DeleteResult.ERROR

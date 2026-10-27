@@ -283,7 +283,7 @@ class TestStartRestoreRowLock:
             features=SimpleNamespace(has_select_for_update=True),
             close=lambda: None,
         )
-        monkeypatch.setattr("backups.restore_engine.connection", fake_connection)
+        monkeypatch.setattr("backups.reservations.connection", fake_connection)
         lock_qs = MagicMock()
         monkeypatch.setattr(
             BackupTarget.objects, "select_for_update", MagicMock(return_value=lock_qs)
@@ -318,7 +318,7 @@ class TestStartRestoreRowLock:
 
         run = start_restore(backup_run)
 
-        locking_backend.get.assert_called_once_with(id=backup_run.target_id)
+        locking_backend.get.assert_called_once_with(pk=backup_run.target_id)
         assert run.status == RestoreRunStatus.SUCCESS
 
 

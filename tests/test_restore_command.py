@@ -219,6 +219,7 @@ class TestSelfRestoreUIBlock:
             status=BackupRunStatus.SUCCESS,
             checksum_sha256="b" * 64,
             storage_key="other/test.tar.gz",
+            storage_bucket="backups",
         )
 
         with patch("backups.views._run_restore_in_thread"):

@@ -88,6 +88,7 @@ The restore lists are read-only; restores are still started only from a backup r
 
 | Variable | Description |
 |----------|-------------|
+| `ECHOPORT_RETENTION_MIN_SUCCESS` | Minimum newest SUCCESS backups retained per target beyond age retention (default: `3`; `0` opts into age-only cleanup) |
 | `ECHOPORT_CACHE_DIR` | Lock file location (default: system temp) |
 | `ECHOPORT_STALE_RUN_GRACE_SECONDS` | Grace added to a target's `timeout_seconds` before a still pending/running run is reaped as stale (default: `900`) |
 | `ECHOPORT_LATE_RESULT_WINDOW_SECONDS` | How long after it started a timed-out backup run is checked for a late archive (default: `86400`) |
@@ -170,9 +171,41 @@ reached for, is retried on the next pass.
 ### Retention cleanup
 
 `cleanup_old_backups` (cron, daily at 03:00) removes successful runs older than
-the target's `retention_days` that no restore references: it deletes the MinIO
-object with `mc rm --json`, then the database row. A failed MinIO delete keeps
-the row and makes the run exit 1.
+`retention_days` that no restore references. Per target it keeps the newest
+`ECHOPORT_RETENTION_MIN_SUCCESS` recorded successes (default **3**), ordered by
+`finished_at` then ID, newest first. Completed SUCCESS rows count even if their storage metadata is incomplete;
+they retain their recorded outcome. Rows with no finish time are never age
+candidates. Failed/timeout runs and deletion-pending rows do not count. This is recorded success, not proof of present storage or a tested restore.
+The floor applies to explicit `--target` cleanup too, including paused/disabled
+targets; automatic cleanup visits active targets. Retirement does not waive it.
+
+Dry-run lists candidates without changing availability. Actual cleanup rechecks
+age, floor, storage coordinates and restore references in a short writer
+transaction and commits `BackupRun.deletion_pending_at` **before** storage access.
+UI, CLI and engine restore admission share `reserve_restore`: fresh validation
+and PENDING creation occur under the same writer guard. A committed restore
+reference prevents deletion intent; committed intent refuses new restores,
+including callers holding stale model objects. SQLite acquires its writer
+reservation before deciding reads; contention or stale snapshot upgrades refuse
+or skip without storage effects. No write transaction spans an external command.
+These guarantees cover participating application writers on the same database.
+
+Cleanup deletes the MinIO object with `mc rm --json`, then the database row.
+A failed or ambiguous MinIO delete keeps the intent and coordinates, makes the
+run exit 1, and leaves the row non-restorable. The next cleanup retries marked
+rows regardless of age or the floor (use `--target NAME` for an inactive target).
+A crash before storage access or after object deletion has the same retry path;
+already missing objects count as deleted. Never clear intent to retry a restore.
+Unexpected restore references or coordinate drift require manual reconciliation;
+PROTECT remains enforced. Existing missing artifacts are not detected or repaired.
+
+Schema migration **0011_backuprun_deletion_pending_at** adds the nullable marker.
+For rollout, hold cleanup while applying the migration and replacing all UI/CLI
+writers with guarded admission, then resume cleanup. During mixed old/new code,
+keep cleanup stopped. For rollback, retain guarded admission or stop both cleanup
+and restores until all pending intents are reconciled; old code ignores the
+marker and could expose a deleted artifact. Do not drop the marker or clear it
+without reconciling storage. This change does not deploy or reconcile live data.
 
 - An object that is already gone counts as deleted. mc reports that with
   exit 1 and `"cause":{"message":"Object does not exist","error":{}}`; Echoport
@@ -243,7 +276,7 @@ so no background backup or restore thread is started.
 The suite runs on SQLite by default. SQLite has no row locks, so the two
 tests that need them (`test_real_lock_contention_fails_existing_run` in
 `tests/test_backup_engine.py` and `tests/test_restore_engine.py`) are skipped
-there. The whole suite also runs against PostgreSQL, where nothing is skipped;
+there. The whole suite also runs against PostgreSQL, where only the SQLite-specific durability and writer/snapshot tests are skipped;
 CI runs it in a second job against a `postgres:17` service container. To run it
 locally, point `config.settings.test_postgres` at a disposable server
 (`ECHOPORT_TEST_POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`NAME`, default
