@@ -102,6 +102,15 @@ MinIO credentials are configured via `mc alias` on the server, not in Echoport's
 mc alias set myminio https://minio.example.com ACCESS_KEY SECRET_KEY
 ```
 
+Despite the names (`MINIO_ALIAS`, `MINIO_MC_PATH`, `backups.minio_client`), nothing
+here is MinIO-specific: the cleanup job uses `mc rm`, `mc ls` and `mc stat`, which
+speak plain S3, and the store is whatever URL the alias names. Pointing the alias
+at another S3 store (RustFS) needs no code change. The `--json` "Object does not
+exist" error the client reads for an already deleted object is mc's own message
+and the same against MinIO and RustFS 1.0.3 (`tests_integration/`, see
+[Tests](#tests)). The alias's account needs `s3:ListBucket` on the bucket and
+`s3:GetObject`/`s3:DeleteObject` on its objects.
+
 ### Security
 
 ```bash
@@ -288,6 +297,15 @@ docker run -d --name echoport-test-pg -e POSTGRES_HOST_AUTH_METHOD=trust \
 uv run --with 'psycopg[binary]' pytest --ds=config.settings.test_postgres
 docker rm -f echoport-test-pg
 ```
+
+`just test-s3-backends` (not part of `just test`, needs Docker) runs the
+object-store client (`backups.minio_client`) against pinned MinIO
+RELEASE.2025-01-20 and RustFS 1.0.3 containers with mc RELEASE.2025-08-13
+(`tests_integration/test_minio_client_backends.py`): delete, idempotent delete
+of a missing object, listing and recursive prefix delete, with a retention-style
+account on an internal Docker network. The first run builds the mc image and
+pulls the store images; containers are named `echoport-s3-backend-neutral-*`
+and removed afterwards.
 
 The engines and view thread bodies close their database connection, which is
 right in their background threads but would drop the test transaction when a

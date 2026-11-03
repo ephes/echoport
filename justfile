@@ -16,6 +16,10 @@ dev-port port="8001":
 test *args:
     uv run pytest {{args}}
 
+# Object-store client against MinIO and RustFS containers (needs Docker; not part of `test`)
+test-s3-backends *args:
+    uv run pytest tests_integration {{args}}
+
 # Run tests with coverage
 test-cov:
     uv run pytest --cov=backups --cov-report=html

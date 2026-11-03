@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The object-store client works unchanged against RustFS as well as MinIO:
+  new `just test-s3-backends` (`tests_integration/`, Docker) runs
+  `backups.minio_client` against pinned MinIO and RustFS 1.0.3 containers with
+  mc RELEASE.2025-08-13. No code change was needed; the README notes that the
+  `MINIO_*` settings name an mc alias for any S3 store.
 - Update the locked certifi CA bundle to 2026.10.19 for the eMudhra/emSign
   CA compromise
   ([GHSA-6q48-6c7w-9gw2](https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2)).
