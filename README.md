@@ -90,17 +90,19 @@ The restore lists are read-only; restores are still started only from a backup r
 |----------|-------------|
 | `ECHOPORT_RETENTION_MIN_SUCCESS` | Minimum newest SUCCESS backups retained per target beyond age retention (default: `3`; `0` opts into age-only cleanup) |
 | `ECHOPORT_CACHE_DIR` | Lock file location (default: system temp) |
-| `MINIO_ALIASES` | mc aliases a target's `storage_alias` may name, comma-separated (default: `minio,rustfs`); should include `MINIO_ALIAS` |
+| `MINIO_ALIASES` | mc aliases a target's `storage_alias` may name, comma-separated (default: `minio,rustfs`; entries are stripped, empty ones dropped); must include `MINIO_ALIAS`, see [MinIO Configuration](#minio-configuration) |
 | `ECHOPORT_STALE_RUN_GRACE_SECONDS` | Grace added to a target's `timeout_seconds` before a still pending/running run is reaped as stale (default: `900`) |
 | `ECHOPORT_LATE_RESULT_WINDOW_SECONDS` | How long after it started a timed-out backup run is checked for a late archive (default: `86400`) |
 | `ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES` | Minutes after the first missed cron time before `/api/health/` reports a target without a successful run as `overdue` (default: `60`; `0` restores immediate overdue). See [Health Response Contract](docs/adding-backup-targets.md#health-response-contract) |
 
 ### MinIO Configuration
 
-MinIO credentials are configured via `mc alias` on the server, not in Echoport's `.env`:
+MinIO credentials are configured via `mc alias` on the server, not in Echoport's `.env`.
+Use the alias names of `MINIO_ALIASES` (default `minio` and `rustfs`):
 
 ```bash
-mc alias set myminio https://minio.example.com ACCESS_KEY SECRET_KEY
+mc alias set minio https://minio.example.com ACCESS_KEY SECRET_KEY
+mc alias set rustfs https://rustfs.example.com ACCESS_KEY SECRET_KEY  # a second store, if targets live there
 ```
 
 Despite the names (`MINIO_ALIAS`, `MINIO_MC_PATH`, `backups.minio_client`), nothing
@@ -115,6 +117,15 @@ and the same against MinIO and RustFS 1.0.3 (`tests_integration/`, see
 `MINIO_ALIAS` is only the default store of new targets; retention deletes
 each target's archives through its own alias, see
 [One store per target](#one-store-per-target).
+
+`MINIO_ALIAS` must be one of `MINIO_ALIASES` and must not be empty. A system
+check enforces this: `manage.py check`, `migrate` and most other management
+commands (all of Echoport's own, including `cleanup_old_backups`, `backup`,
+`run_scheduled_backups` and `set_storage_alias`; Django skips checks for a few
+such as `shell` and `dbshell`) stop with error `backups.E001` (empty) or
+`backups.E002` (not in the list) before doing anything. The web server does
+not run system checks; a deploy's `migrate` step fails on the error. To pause retention for one target use
+`set_storage_alias <target> paused`, not an empty `MINIO_ALIAS`.
 
 ### Security
 
@@ -152,7 +163,8 @@ The UI recognizes the self target by name (`echoport`, any case), by the
 FastDeploy service `echoport-self-backup`, or by the systemd unit
 `echoport.service`.
 
-Or use Justfile shortcuts: `just backup <target>`, `just devdata`
+Or use Justfile shortcuts: `just backup <target>`, `just devdata`,
+`just set-storage-alias <target> <alias|paused>`
 
 ### Stale runs
 
@@ -268,8 +280,9 @@ must name the store that really holds every live run of the target:
   committed and is part of the intent: the storage delete uses it, and if the
   target's alias differs at finalization the row is kept (reconcile manually).
 - The alias changes only with `manage.py set_storage_alias <target> <alias>`
-  (or `paused`). It holds cleanup's lock file, so no cleanup run and no
-  storage delete is in flight, refuses while any run of the target has a
+  (or `paused`; `just set-storage-alias <target> <alias>`). It holds
+  cleanup's lock file, so no cleanup run and no storage delete is in flight,
+  refuses while any run of the target has a
   pending deletion intent (run `cleanup_old_backups --target <name>` first;
   it finishes through the old alias), and changes nothing else. It exits 1
   without a change when it refuses. The admin shows the alias read-only.

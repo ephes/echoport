@@ -44,6 +44,10 @@ collectstatic:
 backup target:
     cd src/django && uv run python manage.py backup {{target}}
 
+# Set the object store retention uses for a target (an alias from MINIO_ALIASES, or paused)
+set-storage-alias target alias:
+    cd src/django && uv run python manage.py set_storage_alias {{target}} {{alias}}
+
 # Open Django shell
 shell:
     cd src/django && uv run python manage.py shell
@@ -82,6 +86,7 @@ commands:
     @echo "  backup <target>          - Run manual backup for target"
     @echo "  run_scheduled_backups    - Check and run due scheduled backups"
     @echo "  cleanup_old_backups      - Delete old backups per retention policy"
+    @echo "  set_storage_alias        - Set a target's store for retention (<target> <alias|paused>)"
     @echo "  check_service_tokens     - Report legacy/expiring FastDeploy service tokens"
     @echo "  create_devdata           - Create development backup targets"
     @echo "  ensure_superuser         - Create/update admin user"

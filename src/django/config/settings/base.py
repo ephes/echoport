@@ -166,7 +166,8 @@ MINIO_MC_PATH = env("MINIO_MC_PATH", default="/usr/local/bin/mc")
 MINIO_ALIAS = env("MINIO_ALIAS", default="minio")
 # The mc aliases a target's storage_alias may name, one per object store
 # (MinIO and RustFS side by side while targets move between them). New targets
-# get MINIO_ALIAS, which should therefore be in this list.
+# get MINIO_ALIAS, which must be in this list (system check backups.E001/E002).
+# Entries are stripped; empty ones are dropped.
 MINIO_ALIASES = env.list("MINIO_ALIASES", default=["minio", "rustfs"])
 
 # FastDeploy integration settings

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- New system check: `MINIO_ALIAS` must be a non-empty entry of
+  `MINIO_ALIASES` (errors `backups.E001` empty, `backups.E002` not in the
+  list), so `manage.py check`, `migrate` and Echoport's management commands
+  stop on that misconfiguration instead of creating targets whose retention
+  fails closed or is paused. `MINIO_ALIASES` entries are stripped and empty ones
+  dropped (`minio, rustfs` names `rustfs`). New `just set-storage-alias
+  <target> <alias|paused>`. The README's `mc alias set` example uses the
+  allowlisted `minio` (and `rustfs`) instead of `myminio`.
 - Retention chooses the object store per target: `BackupTarget.storage_alias`
   (migration `0012_backuptarget_storage_alias`, default `MINIO_ALIAS`) names
   the mc alias `cleanup_old_backups` lists and deletes that target's runs

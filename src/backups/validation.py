@@ -158,8 +158,14 @@ def validate_backup_files(backup_files) -> ValidationResult:
 
 
 def get_storage_aliases() -> list[str]:
-    """The mc aliases a target's storage_alias may name (``MINIO_ALIASES``)."""
-    return [alias for alias in getattr(settings, "MINIO_ALIASES", []) if isinstance(alias, str) and alias]
+    """
+    The mc aliases a target's storage_alias may name (``MINIO_ALIASES``).
+
+    Entries are stripped (``MINIO_ALIASES=minio, rustfs`` names ``rustfs``)
+    and empty ones dropped, so a blank entry never allowlists the paused value.
+    """
+    aliases = (alias.strip() for alias in getattr(settings, "MINIO_ALIASES", []) if isinstance(alias, str))
+    return [alias for alias in aliases if alias]
 
 
 def validate_storage_alias(alias) -> ValidationResult:
