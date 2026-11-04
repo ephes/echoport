@@ -119,7 +119,7 @@ def test_dangerous_interval(file_sqlite, point, age_only, admission, fake_fastde
         assert not RestoreRun.objects.exists()
         attempted.append(True)
 
-    def delete(bucket, key):
+    def delete(bucket, key, *, alias):
         assert not connection.in_atomic_block
         other_connection(attempt)
         return True
@@ -136,8 +136,8 @@ def test_intent_survives_interruption_and_retry(point, age_only, phase):
     class Crash(BaseException):
         pass
 
-    def delete(bucket, key):
-        assert (bucket, key) == (point.storage_bucket, point.storage_key)
+    def delete(bucket, key, *, alias):
+        assert (bucket, key, alias) == (point.storage_bucket, point.storage_key, "minio")
         if phase == "after_storage":
             raise Crash()
         return phase != "ambiguous"
@@ -166,7 +166,7 @@ def test_intent_survives_interruption_and_retry(point, age_only, phase):
     assert get_backups_to_delete(point.target) == [point]
     with patch(f"{STORAGE}.list_prefix", return_value=[]), patch(f"{STORAGE}.delete_object", return_value=True) as retry:
         assert Command()._delete_backup(point) == DeleteResult.DELETED
-        retry.assert_called_once_with(point.storage_bucket, point.storage_key)
+        retry.assert_called_once_with(point.storage_bucket, point.storage_key, alias="minio")
 
 
 def test_restore_first_blocks_cleanup(file_sqlite, point, age_only):
@@ -277,7 +277,7 @@ def test_stale_coordinates_are_not_deleted(point, age_only):
     BackupRun.objects.filter(pk=point.pk).update(storage_key="safety/fresh-key")
     with patch(f"{STORAGE}.list_prefix", return_value=[]), patch(f"{STORAGE}.delete_object", return_value=True) as delete:
         assert Command()._delete_backup(point) == DeleteResult.DELETED
-        delete.assert_called_once_with("backups", "safety/fresh-key")
+        delete.assert_called_once_with("backups", "safety/fresh-key", alias="minio")
 
 
 def test_claim_rollback_never_calls_storage(point, age_only):
@@ -291,7 +291,7 @@ def test_claim_rollback_never_calls_storage(point, age_only):
 def test_unexpected_reference_after_claim_keeps_intent(point, age_only):
     # Direct non-participating writer is outside admission guarantees, but PROTECT
     # and the final guard must preserve metadata for explicit reconciliation.
-    def delete(*args):
+    def delete(*args, **kwargs):
         RestoreRun.objects.create(target=point.target, backup_run=point, status="failed")
         return True
     with patch(f"{STORAGE}.list_prefix", return_value=[]), patch(f"{STORAGE}.delete_object", side_effect=delete):

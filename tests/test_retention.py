@@ -240,6 +240,7 @@ class TestCleanupCommand:
         mock_delete.assert_called_once_with(
             old_successful_backup.storage_bucket,
             old_successful_backup.storage_key,
+            alias="minio",
         )
 
         # Backup should be deleted from DB
@@ -526,7 +527,7 @@ class TestMinioClient:
 
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is True
         mock_run.assert_called_once()
@@ -545,7 +546,7 @@ class TestMinioClient:
         error_json = '{"status":"error","error":{"message":"Access Denied","cause":{"error":{"Code":"AccessDenied"}}}}'
         mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is False
 
@@ -562,7 +563,7 @@ class TestMinioClient:
         error_json = '{"status":"error","error":{"message":"Object does not exist.","cause":{"error":{"Code":"NoSuchKey","Message":"The specified key does not exist."}}}}'
         mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is True
 
@@ -579,7 +580,7 @@ class TestMinioClient:
         error_json = '{"status":"error","error":{"message":"Object does not exist.","cause":{}}}'
         mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is True
 
@@ -592,7 +593,7 @@ class TestMinioClient:
         error_json = '{"status":"error","error":{"message":"Bucket not found","cause":{"error":{"Code":"NoSuchBucket"}}}}'
         mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is False
 
@@ -605,7 +606,7 @@ class TestMinioClient:
         error_json = '{"status":"error","error":{"message":"Alias not found","cause":{}}}'
         mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is False
 
@@ -640,7 +641,7 @@ class TestMinioClient:
 
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="mc", timeout=60)
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is False
 
@@ -651,7 +652,7 @@ class TestMinioClient:
 
         mock_run.side_effect = FileNotFoundError()
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is False
 
@@ -663,7 +664,7 @@ class TestMinioClient:
         # Invalid JSON output
         mock_run.return_value = MagicMock(returncode=1, stdout="not json", stderr="some error")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is False
 
@@ -679,7 +680,7 @@ class TestMinioClient:
         )
         mock_run.return_value = MagicMock(returncode=1, stdout=mixed_output, stderr="")
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is True
 
@@ -692,7 +693,7 @@ class TestMinioClient:
         error_json = '{"status":"error","error":{"message":"Object does not exist.","cause":{"error":{"Code":"NoSuchKey"}}}}'
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr=error_json)
 
-        result = delete_object("backups", "test/backup.tar.gz")
+        result = delete_object("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is True
 
@@ -711,7 +712,7 @@ class TestMinioClient:
 
         mock_run.return_value = MagicMock(returncode=1, stdout=self.REAL_MC_NOT_FOUND, stderr="")
 
-        assert delete_object("backups", "python-podcast-media/2026-02-24T21-55-16") is True
+        assert delete_object("backups", "python-podcast-media/2026-02-24T21-55-16", alias="minio") is True
 
     @patch("backups.minio_client.subprocess.run")
     def test_delete_object_unknown_alias_is_error(self, mock_run):
@@ -726,7 +727,7 @@ class TestMinioClient:
         )
         mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
 
-        assert delete_object("backups", "x") is False
+        assert delete_object("backups", "x", alias="minio") is False
 
     @patch("backups.minio_client.subprocess.run")
     def test_delete_object_missing_bucket_real_shape_is_error(self, mock_run):
@@ -740,7 +741,7 @@ class TestMinioClient:
         )
         mock_run.return_value = MagicMock(returncode=1, stdout=error_json, stderr="")
 
-        assert delete_object("backups", "x") is False
+        assert delete_object("backups", "x", alias="minio") is False
 
     @pytest.mark.parametrize(
         ("message", "expected"),
@@ -829,7 +830,7 @@ class TestCleanupMissingAndSharedObjects:
             Command().handle(dry_run=False, target=None)
 
         assert exc_info.value.code == 0
-        mock_delete.assert_called_once_with("backups", ".tar.gz")
+        mock_delete.assert_called_once_with("backups", ".tar.gz", alias="minio")
         assert not BackupRun.objects.filter(pk__in=[first.pk, last.pk]).exists()
 
     @patch("backups.management.commands.cleanup_old_backups.delete_object")
@@ -844,7 +845,7 @@ class TestCleanupMissingAndSharedObjects:
         with pytest.raises(SystemExit):
             Command().handle(dry_run=False, target=None)
 
-        mock_delete.assert_called_once_with("backups", "k.tar.gz")
+        mock_delete.assert_called_once_with("backups", "k.tar.gz", alias="minio")
         assert not BackupRun.objects.filter(pk=old.pk).exists()
 
     @patch("backups.management.commands.cleanup_old_backups.delete_object")
@@ -882,7 +883,7 @@ class TestMinioPrefix:
 
         mock_run.return_value = MagicMock(returncode=0, stdout=MANIFEST_LINE + "\n", stderr="")
 
-        assert list_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") == ["manifest.json"]
+        assert list_prefix("backups", "python-podcast-media/2026-10-13T01-45-02", alias="minio") == ["manifest.json"]
         assert mock_run.call_args[0][0][1:] == [
             "ls",
             "--recursive",
@@ -895,7 +896,7 @@ class TestMinioPrefix:
         from backups.minio_client import list_prefix
 
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        assert list_prefix("backups", "a/b") == []
+        assert list_prefix("backups", "a/b", alias="minio") == []
 
         no_bucket = (
             '{"status":"error","error":{"message":"Unable to list folder.","cause":'
@@ -903,17 +904,17 @@ class TestMinioPrefix:
             '"type":"error"}}'
         )
         mock_run.return_value = MagicMock(returncode=1, stdout=no_bucket, stderr="")
-        assert list_prefix("backups", "a/b") is None
+        assert list_prefix("backups", "a/b", alias="minio") is None
 
         mock_run.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
-        assert list_prefix("backups", "a/b") is None
+        assert list_prefix("backups", "a/b", alias="minio") is None
 
     @pytest.mark.parametrize("prefix", ["", "/", "//", "a/b/", "/a", "a//b", "a/.."])
     @patch("backups.minio_client.subprocess.run")
     def test_list_prefix_refuses_root_and_odd_keys(self, mock_run, prefix):
         from backups.minio_client import list_prefix
 
-        assert list_prefix("backups", prefix) is None
+        assert list_prefix("backups", prefix, alias="minio") is None
         mock_run.assert_not_called()
 
     @patch("backups.minio_client.subprocess.run")
@@ -925,7 +926,7 @@ class TestMinioPrefix:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
 
-        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") is True
+        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02", alias="minio") is True
         rm_args = mock_run.call_args_list[0][0][0]
         assert rm_args[1:] == [
             "rm",
@@ -945,7 +946,7 @@ class TestMinioPrefix:
             MagicMock(returncode=0, stdout=MANIFEST_LINE, stderr=""),
         ]
 
-        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") is False
+        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02", alias="minio") is False
 
     @patch("backups.minio_client.subprocess.run")
     def test_delete_prefix_fails_on_mc_error(self, mock_run):
@@ -953,7 +954,7 @@ class TestMinioPrefix:
 
         mock_run.return_value = MagicMock(returncode=1, stdout='{"status":"error"}', stderr="")
 
-        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02") is False
+        assert delete_prefix("backups", "python-podcast-media/2026-10-13T01-45-02", alias="minio") is False
         assert mock_run.call_count == 1
 
     @pytest.mark.parametrize(
@@ -964,7 +965,7 @@ class TestMinioPrefix:
     def test_delete_prefix_refuses_root_and_target_level_prefixes(self, mock_run, prefix):
         from backups.minio_client import delete_prefix
 
-        assert delete_prefix("backups", prefix) is False
+        assert delete_prefix("backups", prefix, alias="minio") is False
         mock_run.assert_not_called()
 
 

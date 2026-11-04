@@ -164,6 +164,10 @@ ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES = env.int(
 # MinIO settings (for retention cleanup)
 MINIO_MC_PATH = env("MINIO_MC_PATH", default="/usr/local/bin/mc")
 MINIO_ALIAS = env("MINIO_ALIAS", default="minio")
+# The mc aliases a target's storage_alias may name, one per object store
+# (MinIO and RustFS side by side while targets move between them). New targets
+# get MINIO_ALIAS, which should therefore be in this list.
+MINIO_ALIASES = env.list("MINIO_ALIASES", default=["minio", "rustfs"])
 
 # FastDeploy integration settings
 # Default endpoint (used when target has no fastdeploy_endpoint_key)

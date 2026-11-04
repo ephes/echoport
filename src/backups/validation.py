@@ -157,6 +157,29 @@ def validate_backup_files(backup_files) -> ValidationResult:
     return ValidationResult(value=validated)
 
 
+def get_storage_aliases() -> list[str]:
+    """The mc aliases a target's storage_alias may name (``MINIO_ALIASES``)."""
+    return [alias for alias in getattr(settings, "MINIO_ALIASES", []) if isinstance(alias, str) and alias]
+
+
+def validate_storage_alias(alias) -> ValidationResult:
+    """
+    Validate a target's storage_alias: one of MINIO_ALIASES, or empty (paused).
+
+    An alias mc does not know lists as empty and would make every object look
+    already deleted, so only configured names are accepted.
+    """
+    if alias == "":
+        return ValidationResult(value="")
+    allowed = get_storage_aliases()
+    if not isinstance(alias, str) or alias not in allowed:
+        shown = ", ".join(allowed) or "none configured"
+        return ValidationResult(
+            error=f"Storage alias {alias!r} is not one of MINIO_ALIASES ({shown}) or empty (paused)."
+        )
+    return ValidationResult(value=alias)
+
+
 def validate_schedule(schedule: str) -> ValidationResult:
     """
     Validate a cron expression.

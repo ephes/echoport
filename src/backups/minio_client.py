@@ -25,6 +25,22 @@ def _get_minio_alias() -> str:
     return getattr(settings, "MINIO_ALIAS", "minio")
 
 
+def _allowed_alias(alias: str) -> bool:
+    """
+    True for one of MINIO_ALIASES (a target's store).
+
+    Retention names the alias per target. An alias mc does not have lists as
+    empty and fails a delete with "Requested path ... not found", so a name
+    outside the allowlist is refused before mc runs.
+    """
+    from backups.validation import get_storage_aliases
+
+    if alias in get_storage_aliases():
+        return True
+    logger.error(f"Refusing mc alias {alias!r}: not one of MINIO_ALIASES")
+    return False
+
+
 _OBJECT_NOT_FOUND_MESSAGE = "object does not exist"
 
 
@@ -88,19 +104,22 @@ def _is_object_not_found_error(output: str) -> bool:
     return False
 
 
-def delete_object(bucket: str, key: str) -> bool:
+def delete_object(bucket: str, key: str, *, alias: str) -> bool:
     """
     Delete an object from MinIO.
 
     Args:
         bucket: The bucket name (e.g., "backups")
         key: The object key (e.g., "nyxmon/2026-01-28T02-00-00.tar.gz")
+        alias: The mc alias of the target's store (one of MINIO_ALIASES)
 
     Returns:
-        True if deletion succeeded or object already doesn't exist, False otherwise
+        True if deletion succeeded or object already doesn't exist on that
+        store, False otherwise
     """
+    if not _allowed_alias(alias):
+        return False
     mc_path = _get_mc_path()
-    alias = _get_minio_alias()
     object_path = f"{alias}/{bucket}/{key}"
 
     try:
@@ -145,21 +164,23 @@ def delete_object(bucket: str, key: str) -> bool:
         return False
 
 
-def list_prefix(bucket: str, prefix: str) -> list[str] | None:
+def list_prefix(bucket: str, prefix: str, *, alias: str) -> list[str] | None:
     """
-    List object keys below ``<prefix>/`` (recursively).
+    List object keys below ``<prefix>/`` (recursively) through ``alias``.
 
     Returns the keys (relative to the prefix), an empty list when nothing is
-    stored below it, or None when mc fails. mc also prints nothing and exits 0
-    when the alias is unknown and the path is taken as a missing local
-    directory, so an empty list alone does not prove the alias works.
+    stored below it, or None when mc fails or ``alias`` is not one of
+    MINIO_ALIASES. mc also prints nothing and exits 0 when the alias is
+    unknown to mc and the path is taken as a missing local directory, so an
+    empty list alone does not prove the alias works.
     """
     if not _is_clean_key(prefix):
         logger.error(f"Refusing to list MinIO prefix {bucket}/{prefix!r}")
         return None
+    if not _allowed_alias(alias):
+        return None
 
     mc_path = _get_mc_path()
-    alias = _get_minio_alias()
     folder = f"{alias}/{bucket}/{prefix}/"
 
     try:
@@ -213,9 +234,9 @@ def _is_clean_key(key: str) -> bool:
     return bool(key) and all(seg not in ("", ".", "..") for seg in key.split("/"))
 
 
-def delete_prefix(bucket: str, prefix: str) -> bool:
+def delete_prefix(bucket: str, prefix: str, *, alias: str) -> bool:
     """
-    Delete everything below ``<prefix>/`` and verify the prefix is empty.
+    Delete everything below ``<prefix>/`` through ``alias`` and verify the prefix is empty.
 
     ``mc rm`` on a prefix without a trailing slash and without ``--recursive``
     reports success but deletes nothing, so this runs
@@ -228,9 +249,10 @@ def delete_prefix(bucket: str, prefix: str) -> bool:
     if not _is_clean_key(prefix) or len(prefix.split("/")) < 2:
         logger.error(f"Refusing recursive delete of MinIO prefix {bucket}/{prefix!r}")
         return False
+    if not _allowed_alias(alias):
+        return False
 
     mc_path = _get_mc_path()
-    alias = _get_minio_alias()
     folder = f"{alias}/{bucket}/{prefix}/"
 
     try:
@@ -257,7 +279,7 @@ def delete_prefix(bucket: str, prefix: str) -> bool:
         )
         return False
 
-    remaining = list_prefix(bucket, prefix)
+    remaining = list_prefix(bucket, prefix, alias=alias)
     if remaining is None:
         return False
     if remaining:

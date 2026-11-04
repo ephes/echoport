@@ -6,7 +6,9 @@ It removes backups older than the target's retention_days setting,
 deleting from MinIO first then from the database. A MinIO object that
 another backup run still references is kept; only the expired row goes.
 Prefix keys (media targets) are deleted recursively and must be empty
-before the row is removed.
+before the row is removed. Each target's archives are deleted through its
+own mc alias (``BackupTarget.storage_alias``, the store that holds them);
+a target whose alias is empty (paused) is skipped.
 
 Usage:
     python manage.py cleanup_old_backups
@@ -33,6 +35,7 @@ from django.utils import timezone
 
 from backups.minio_client import delete_object, delete_prefix, list_prefix
 from backups.models import (
+    STORAGE_ALIAS_PAUSED,
     BackupRun,
     BackupRunStatus,
     BackupStatus,
@@ -40,6 +43,7 @@ from backups.models import (
     RestoreRun,
     exact_name_hint,
 )
+from backups.validation import validate_storage_alias
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,47 @@ def _get_lock_file_path() -> Path:
         return Path(cache_dir) / "cleanup.lock"
 
     return Path("/tmp/echoport-cleanup.lock")
+
+
+def acquire_cleanup_lock():
+    """
+    Take the cleanup command's exclusive lock without waiting.
+
+    Returns:
+        - file object if lock acquired successfully
+        - None if another holder (a cleanup run) has it
+
+    Raises:
+        OSError for permission errors or other filesystem issues
+    """
+    lock_path = _get_lock_file_path()
+    lock_file = None
+    try:
+        fd = os.open(
+            lock_path,
+            os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        lock_file = os.fdopen(fd, "w")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_file
+    except OSError as e:
+        if lock_file is not None:
+            lock_file.close()
+        if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+            return None
+        if e.errno == errno.ELOOP:
+            raise OSError(errno.ELOOP, f"Lock file is a symlink (possible attack): {lock_path}")
+        raise
+
+
+def release_cleanup_lock(lock_file) -> None:
+    """Release a lock taken with :func:`acquire_cleanup_lock`."""
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+    except (OSError, IOError):
+        pass
 
 
 def protected_success_ids(target: BackupTarget) -> list[int]:
@@ -200,43 +245,12 @@ class Command(BaseCommand):
                 self._release_lock(lock_file)
 
     def _acquire_lock(self):
-        """
-        Acquire an exclusive lock to prevent overlapping instances.
-
-        Returns:
-            - file object if lock acquired successfully
-            - None if another instance is already running
-
-        Raises:
-            OSError for permission errors or other filesystem issues
-        """
-        lock_path = _get_lock_file_path()
-        lock_file = None
-        try:
-            fd = os.open(
-                lock_path,
-                os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-            lock_file = os.fdopen(fd, "w")
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return lock_file
-        except OSError as e:
-            if lock_file is not None:
-                lock_file.close()
-            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-                return None
-            if e.errno == errno.ELOOP:
-                raise OSError(errno.ELOOP, f"Lock file is a symlink (possible attack): {lock_path}")
-            raise
+        """Acquire an exclusive lock to prevent overlapping instances (:func:`acquire_cleanup_lock`)."""
+        return acquire_cleanup_lock()
 
     def _release_lock(self, lock_file):
         """Release the lock file."""
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            lock_file.close()
-        except (OSError, IOError):
-            pass
+        release_cleanup_lock(lock_file)
 
     def _run_cleanup(self, dry_run: bool, target_name: str | None) -> int:
         """
@@ -331,6 +345,21 @@ class Command(BaseCommand):
             logger.debug(f"No old backups to delete for target '{target.name}'")
             return 0, 0, 0
 
+        # A first look only; _delete_backup decides on the locked target row.
+        prefix = "  [DRY RUN] Would skip" if dry_run else "  Skipping"
+        if target.storage_alias == STORAGE_ALIAS_PAUSED:
+            self.stdout.write(
+                f"{prefix} {len(backups)} expired backup(s) of '{target.name}': "
+                "retention is paused (empty storage alias)"
+            )
+            return 0, len(backups), 0
+        alias_check = validate_storage_alias(target.storage_alias)
+        if not alias_check.is_valid:
+            self.stderr.write(
+                self.style.ERROR(f"  Target '{target.name}': {alias_check.error} Nothing deleted.")
+            )
+            return 0, 0, len(backups)
+
         deleted = 0
         skipped = 0
         errors = 0
@@ -406,6 +435,18 @@ class Command(BaseCommand):
                     return DeleteResult.ERROR
                 if current.status != BackupRunStatus.SUCCESS:
                     return DeleteResult.SKIPPED
+                # The store comes from the locked target row and joins the
+                # intent's identity: set_storage_alias holds the cleanup lock
+                # and refuses while an intent is pending, so it cannot change
+                # under a storage delete.
+                alias = current.target.storage_alias
+                if alias == STORAGE_ALIAS_PAUSED:
+                    self.stdout.write(f"  Skipping backup {backup.pk} - retention of its target is paused")
+                    return DeleteResult.SKIPPED
+                alias_check = validate_storage_alias(alias)
+                if not alias_check.is_valid:
+                    self.stderr.write(f"  Backup {backup.pk}: {alias_check.error}")
+                    return DeleteResult.ERROR
                 if current.deletion_pending_at is None:
                     cutoff = timezone.now() - timedelta(days=current.target.retention_days)
                     if (current.finished_at is None or current.finished_at >= cutoff
@@ -416,19 +457,21 @@ class Command(BaseCommand):
                         return DeleteResult.SKIPPED
                     current.deletion_pending_at = timezone.now()
                     current.save(update_fields=["deletion_pending_at"])
-                identity = (current.storage_bucket, current.storage_key, current.deletion_pending_at)
+                identity = (current.storage_bucket, current.storage_key, current.deletion_pending_at, alias)
             intent_committed = True
-            outcome = self._delete_storage(current, identity[0], identity[1])
+            outcome = self._delete_storage(current, identity[0], identity[1], alias)
             if outcome is not DeleteResult.DELETED:
                 return outcome
             with transaction.atomic(durable=True):
                 lock_target(current.target_id)
-                final = BackupRun.objects.get(pk=current.pk)
-                if ((final.storage_bucket, final.storage_key, final.deletion_pending_at) != identity
-                        or RestoreRun.objects.filter(backup_run=final).exists()):
+                final = BackupRun.objects.select_related("target").get(pk=current.pk)
+                current_identity = (
+                    final.storage_bucket, final.storage_key, final.deletion_pending_at, final.target.storage_alias,
+                )
+                if current_identity != identity or RestoreRun.objects.filter(backup_run=final).exists():
                     raise ValueError("Deletion intent drift or unexpected restore reference; reconcile manually")
                 final.delete()
-            self.stdout.write(f"  Deleted '{current.target.name}' backup: {identity[1]}")
+            self.stdout.write(f"  Deleted '{current.target.name}' backup: {identity[1]} ({alias})")
             return DeleteResult.DELETED
         except OperationalError as error:
             if intent_committed:
@@ -441,10 +484,10 @@ class Command(BaseCommand):
             return DeleteResult.ERROR
 
     def _delete_storage(
-        self, backup: BackupRun, storage_bucket: str, storage_key: str
+        self, backup: BackupRun, storage_bucket: str, storage_key: str, alias: str
     ) -> DeleteResult:
         """
-        Delete the backup's MinIO object or prefix unless another run needs it.
+        Delete the backup's object or prefix through ``alias`` unless another run needs it.
 
         Returns DELETED when the DB row may be deleted (storage deleted,
         already gone, or kept for a run with the same key), SKIPPED when other
@@ -474,18 +517,18 @@ class Command(BaseCommand):
         # Media targets store a prefix (<target>/<timestamp>) instead of an
         # object key. Anything stored below "<key>/" marks such a prefix; it
         # is deleted recursively and must be empty afterwards.
-        stored = list_prefix(storage_bucket, storage_key)
+        stored = list_prefix(storage_bucket, storage_key, alias=alias)
         if stored is None:
             deleted = False
         elif stored:
-            deleted = delete_prefix(storage_bucket, storage_key)
+            deleted = delete_prefix(storage_bucket, storage_key, alias=alias)
         else:
-            deleted = delete_object(storage_bucket, storage_key)
+            deleted = delete_object(storage_bucket, storage_key, alias=alias)
 
         if not deleted:
             self.stderr.write(
                 self.style.ERROR(
-                    f"  Failed to delete from MinIO: {storage_bucket}/{storage_key}"
+                    f"  Failed to delete from MinIO: {storage_bucket}/{storage_key} (alias {alias})"
                 )
             )
             return DeleteResult.ERROR

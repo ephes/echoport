@@ -141,13 +141,14 @@ def client(store: Store, settings, tmp_path: Path) -> Store:
     wrapper.chmod(0o755)
     settings.MINIO_MC_PATH = str(wrapper)
     settings.MINIO_ALIAS = "retention"
+    settings.MINIO_ALIASES = ["retention"]
     return store
 
 
 def test_delete_object_removes_the_object(client: Store) -> None:
     client.put("nyxmon/2026-11-01T02-00-00.tar.gz")
     assert minio_client.object_exists(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz")
-    assert minio_client.delete_object(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz")
+    assert minio_client.delete_object(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz", alias="retention")
     assert not client.exists("nyxmon/2026-11-01T02-00-00.tar.gz")
     assert not minio_client.object_exists(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz")
 
@@ -156,23 +157,23 @@ def test_delete_object_of_a_missing_object_is_idempotent(client: Store) -> None:
     result = client.mc("rm", "--json", f"retention/{BUCKET}/nyxmon/never-there.tar.gz", check=False)
     assert result.returncode != 0
     assert minio_client._is_object_not_found_error(result.stdout + result.stderr)
-    assert minio_client.delete_object(BUCKET, "nyxmon/never-there.tar.gz")
+    assert minio_client.delete_object(BUCKET, "nyxmon/never-there.tar.gz", alias="retention")
 
 
 def test_delete_object_fails_for_a_missing_bucket(client: Store) -> None:
-    assert not minio_client.delete_object("no-such-bucket", "nyxmon/x.tar.gz")
+    assert not minio_client.delete_object("no-such-bucket", "nyxmon/x.tar.gz", alias="retention")
 
 
 def test_prefix_listing_and_recursive_delete(client: Store) -> None:
     for key in ("homepage-media/2026-11-01T02-00-00/manifest.json", "homepage-media/2026-11-01T02-00-00/sub/a.bin"):
         client.put(key)
     client.put("homepage-media/2026-11-02T02-00-00/manifest.json")
-    assert sorted(minio_client.list_prefix(BUCKET, "homepage-media/2026-11-01T02-00-00") or []) == [
+    assert sorted(minio_client.list_prefix(BUCKET, "homepage-media/2026-11-01T02-00-00", alias="retention") or []) == [
         "manifest.json",
         "sub/a.bin",
     ]
-    assert minio_client.list_prefix(BUCKET, "homepage-media/nothing-here") == []
-    assert minio_client.delete_prefix(BUCKET, "homepage-media/2026-11-01T02-00-00")
-    assert minio_client.list_prefix(BUCKET, "homepage-media/2026-11-01T02-00-00") == []
+    assert minio_client.list_prefix(BUCKET, "homepage-media/nothing-here", alias="retention") == []
+    assert minio_client.delete_prefix(BUCKET, "homepage-media/2026-11-01T02-00-00", alias="retention")
+    assert minio_client.list_prefix(BUCKET, "homepage-media/2026-11-01T02-00-00", alias="retention") == []
     # The neighbouring run is untouched.
     assert client.exists("homepage-media/2026-11-02T02-00-00/manifest.json")

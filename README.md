@@ -90,6 +90,7 @@ The restore lists are read-only; restores are still started only from a backup r
 |----------|-------------|
 | `ECHOPORT_RETENTION_MIN_SUCCESS` | Minimum newest SUCCESS backups retained per target beyond age retention (default: `3`; `0` opts into age-only cleanup) |
 | `ECHOPORT_CACHE_DIR` | Lock file location (default: system temp) |
+| `MINIO_ALIASES` | mc aliases a target's `storage_alias` may name, comma-separated (default: `minio,rustfs`); should include `MINIO_ALIAS` |
 | `ECHOPORT_STALE_RUN_GRACE_SECONDS` | Grace added to a target's `timeout_seconds` before a still pending/running run is reaped as stale (default: `900`) |
 | `ECHOPORT_LATE_RESULT_WINDOW_SECONDS` | How long after it started a timed-out backup run is checked for a late archive (default: `86400`) |
 | `ECHOPORT_HEALTH_OVERDUE_GRACE_MINUTES` | Minutes after the first missed cron time before `/api/health/` reports a target without a successful run as `overdue` (default: `60`; `0` restores immediate overdue). See [Health Response Contract](docs/adding-backup-targets.md#health-response-contract) |
@@ -111,6 +112,10 @@ and the same against MinIO and RustFS 1.0.3 (`tests_integration/`, see
 [Tests](#tests)). The alias's account needs `s3:ListBucket` on the bucket and
 `s3:GetObject`/`s3:DeleteObject` on its objects.
 
+`MINIO_ALIAS` is only the default store of new targets; retention deletes
+each target's archives through its own alias, see
+[One store per target](#one-store-per-target).
+
 ### Security
 
 ```bash
@@ -124,6 +129,7 @@ chmod 600 .env  # Restrict .env permissions
 | `backup <target>` | Run manual backup for a target |
 | `run_scheduled_backups` | Reap stale runs, record late archives of timed-out backups, then check and run due scheduled backups (cron); `--reap-only` only reaps |
 | `cleanup_old_backups` | Delete backups older than retention_days (see Retention cleanup) |
+| `set_storage_alias <target> <alias\|paused>` | Set the object store retention deletes a target's archives from, or pause its retention (see [One store per target](#one-store-per-target)) |
 | `check_service_tokens` | Report FastDeploy service tokens that are legacy, expiring, expired or unusable; exits 1 if any need attention (`--warn-days`, default 21) |
 | `create_devdata` | Create development backup targets |
 | `ensure_superuser` | Create/update admin user (deployment) |
@@ -239,6 +245,40 @@ without reconciling storage. This change does not deploy or reconcile live data.
 - A run with other runs stored below `<key>/` is skipped (row and storage
   kept) until those runs are gone.
 
+#### One store per target
+
+Each target names the mc alias of the store that holds its archives in
+`BackupTarget.storage_alias` (migration **0012_backuptarget_storage_alias**:
+existing targets and new ones get `MINIO_ALIAS`). Cleanup lists and deletes a
+target's runs only through that alias, so targets can live on different
+stores (MinIO and RustFS while they move one at a time). "Object does not
+exist" still counts as deleted, on the target's store, which is why the alias
+must name the store that really holds every live run of the target:
+
+- The value must be one of `MINIO_ALIASES` or empty. An empty alias
+  **pauses** retention for the target: cleanup reports its expired runs as
+  skipped and records no deletion intent. Use it while a target's archives
+  move between stores, when neither store holds all of them.
+- Any other value (written around the command) fails closed: the target's
+  expired runs count as errors, nothing is deleted and cleanup exits 1. The
+  client refuses an alias outside the list before mc runs; an allowlisted
+  alias that mc does not have also fails (its delete reports "Requested path
+  ... not found").
+- The alias is read from the locked target row when the deletion intent is
+  committed and is part of the intent: the storage delete uses it, and if the
+  target's alias differs at finalization the row is kept (reconcile manually).
+- The alias changes only with `manage.py set_storage_alias <target> <alias>`
+  (or `paused`). It holds cleanup's lock file, so no cleanup run and no
+  storage delete is in flight, refuses while any run of the target has a
+  pending deletion intent (run `cleanup_old_backups --target <name>` first;
+  it finishes through the old alias), and changes nothing else. It exits 1
+  without a change when it refuses. The admin shows the alias read-only.
+
+Moving a target from store A to store B: `set_storage_alias <target> paused`
+before its runner writes to B; copy the archives; set `B` only once every
+live run of the target is on B. Rolling back: `paused` again together with
+the runner switch back, copy what was written on B back to A, then `A`.
+
 ### Service token expiry
 
 Every backup authenticates to FastDeploy with a service token (a JWT): the
@@ -303,7 +343,11 @@ object-store client (`backups.minio_client`) against pinned MinIO
 RELEASE.2025-01-20 and RustFS 1.0.3 containers with mc RELEASE.2025-08-13
 (`tests_integration/test_minio_client_backends.py`): delete, idempotent delete
 of a missing object, listing and recursive prefix delete, with a retention-style
-account on an internal Docker network. The first run builds the mc image and
+account on an internal Docker network. `tests_integration/test_retention_per_store.py`
+runs both stores side by side with the aliases `minio` and `rustfs` and runs
+`cleanup_old_backups` for targets on either store (deletes only on the
+target's store, paused target untouched, missing object counts as deleted,
+an allowlisted alias unknown to mc fails closed). The first run builds the mc image and
 pulls the store images; containers are named `echoport-s3-backend-neutral-*`
 and removed afterwards.
 

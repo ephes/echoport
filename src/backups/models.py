@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.db.models.functions import Lower
 from django.utils import timezone
@@ -21,6 +22,16 @@ def _normalize_systemd_unit(value: str | None) -> str:
         # systemd treats a bare unit name as "<name>.service"
         unit = f"{unit}.service"
     return unit
+
+
+# BackupTarget.storage_alias under which retention leaves the target alone:
+# while its archives move between stores, neither store holds all of them.
+STORAGE_ALIAS_PAUSED = ""
+
+
+def default_storage_alias() -> str:
+    """The store of a new target (and of every target that existed before the field)."""
+    return settings.MINIO_ALIAS
 
 
 class BackupStatus(models.TextChoices):
@@ -165,6 +176,19 @@ class BackupTarget(models.Model):
         default="backups",
         help_text="MinIO bucket for storing backups",
     )
+    # Changed only by `manage.py set_storage_alias`, which holds the cleanup
+    # lock and refuses while a deletion of the target is pending.
+    storage_alias = models.CharField(
+        max_length=64,
+        blank=True,
+        default=default_storage_alias,
+        editable=False,
+        help_text=(
+            "mc alias of the object store retention deletes this target's "
+            "archives from (one of MINIO_ALIASES); empty pauses retention "
+            "for the target. Set with manage.py set_storage_alias."
+        ),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -218,6 +242,7 @@ class BackupTarget(models.Model):
             validate_endpoint_key,
             validate_path,
             validate_schedule,
+            validate_storage_alias,
         )
 
         errors = {}
@@ -299,15 +324,35 @@ class BackupTarget(models.Model):
             target_mode=self.target_mode,
             service_name=self.service_name,
         )
-        if source_error:
-            errors["__all__"] = source_error
+        non_field = [source_error] if source_error else []
+        # Not a form field (set by command only), so reported for the whole target.
+        result = validate_storage_alias(self.storage_alias)
+        if not result.is_valid:
+            non_field.append(result.error)
+        if non_field:
+            errors["__all__"] = non_field
 
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        """Override save to enforce validation."""
+        """
+        Override save to enforce validation.
+
+        An existing target's storage_alias is never written here: only
+        set_storage_alias changes it, under its barrier, so a save of an
+        instance loaded before that change cannot write the old store back.
+        """
         self.full_clean()
+        if not self._state.adding:
+            fields = kwargs.get("update_fields")
+            if fields is None:
+                kwargs["update_fields"] = [
+                    field.name for field in self._meta.concrete_fields
+                    if not field.primary_key and field.name != "storage_alias"
+                ]
+            elif "storage_alias" in fields:
+                raise ValueError("storage_alias changes only with manage.py set_storage_alias")
         super().save(*args, **kwargs)
 
     def get_last_successful_run(self):

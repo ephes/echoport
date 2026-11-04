@@ -154,7 +154,7 @@ class BackupTargetAdmin(admin.ModelAdmin):
     ]
     list_filter = ["target_mode", "status", "schedule_required"]
     search_fields = ["name", "description"]
-    readonly_fields = ["created_at", "updated_at"]
+    readonly_fields = ["storage_alias", "created_at", "updated_at"]
 
     fieldsets = [
         (None, {
@@ -179,10 +179,13 @@ class BackupTargetAdmin(admin.ModelAdmin):
                 "retention_days",
                 "timeout_seconds",
                 "storage_bucket",
+                "storage_alias",
             ],
             "description": "Schedule uses cron syntax (e.g., '0 2 * * *' for 2am daily). "
                           "Enable schedule required for targets that must never become manual-only. "
-                          "Note: Paused/disabled targets are excluded from retention cleanup.",
+                          "Note: Paused/disabled targets are excluded from retention cleanup. "
+                          "The storage alias (empty: retention paused) changes only with "
+                          "manage.py set_storage_alias.",
         }),
         ("Timestamps", {
             "fields": ["created_at", "updated_at"],

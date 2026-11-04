@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Retention chooses the object store per target: `BackupTarget.storage_alias`
+  (migration `0012_backuptarget_storage_alias`, default `MINIO_ALIAS`) names
+  the mc alias `cleanup_old_backups` lists and deletes that target's runs
+  through; it must be one of the new `MINIO_ALIASES` setting (default
+  `minio,rustfs`), and empty pauses retention for the target. The alias is
+  read from the locked target row and is part of the deletion intent (a
+  change before finalization keeps the row). `backups.minio_client`'s
+  `list_prefix`, `delete_object` and `delete_prefix` take the alias
+  explicitly and refuse one outside the allowlist. New
+  `manage.py set_storage_alias <target> <alias|paused>` is the only way to
+  change it: it holds cleanup's lock and refuses while a deletion of the
+  target is pending. "Object does not exist" on the target's store still
+  counts as deleted. `just test-s3-backends` adds MinIO and RustFS side by
+  side (`tests_integration/test_retention_per_store.py`).
 - The object-store client works unchanged against RustFS as well as MinIO:
   new `just test-s3-backends` (`tests_integration/`, Docker) runs
   `backups.minio_client` against pinned MinIO and RustFS 1.0.3 containers with
