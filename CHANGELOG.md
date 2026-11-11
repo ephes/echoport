@@ -14,7 +14,11 @@
   `BackupRun.runner_capabilities` (from `ECHOPORT_RESULT` `capabilities`),
   `RestoreRun.destination`, `keep_scratch`, `scratch_path`, `verification`,
   all with defaults that keep existing behaviour. Live restores and the web UI
-  are unchanged. See the README, "Scratch restores".
+  are unchanged. See the README, "Scratch restores". A service-owned target
+  (empty `db_path`, such as villakunterbunt-staging) gets
+  `ECHOPORT_RESTORE_SCRATCH_DB_PATH=''` and its runner uses its own database
+  path; Echoport then cannot check the scratch dir's root (the guard key is the
+  boundary). A path-driven target without a `db_path` is refused.
 - New system check: `MINIO_ALIAS` must be a non-empty entry of
   `MINIO_ALIASES` (errors `backups.E001` empty, `backups.E002` not in the
   list), so `manage.py check`, `migrate` and Echoport's management commands

@@ -29,6 +29,7 @@ from .models import (
     BackupRunStatus,
     BackupStatus,
     BackupTarget,
+    BackupTargetMode,
     RestoreDestination,
     RestoreRun,
     RestoreRunStatus,
@@ -122,6 +123,11 @@ def scratch_restore_blocked_reason(target: BackupTarget) -> str | None:
     """
     if not target.scratch_restore_enabled:
         return f"Scratch restores are not enabled for target '{target.name}'"
+    if target.target_mode != BackupTargetMode.SERVICE_OWNED and not target.db_path:
+        return (
+            f"Target '{target.name}' has no db_path: a scratch restore needs the database path, "
+            f"or a service-owned target whose runner owns its paths"
+        )
     newest = (
         BackupRun.objects.filter(target=target, status=BackupRunStatus.SUCCESS)
         .order_by("-started_at", "-pk")
@@ -415,8 +421,12 @@ def _scratch_result_problem(run: RestoreRun, raw: dict) -> str | None:
     if restore_id != str(run.pk):
         return f"runner reported the scratch path of another restore ({scratch_path})"
     # The scratch dir sits next to the live database, in the directory that
-    # holds it (the runners' root for these targets); anything else fails closed.
-    if root != posixpath.dirname(run.target.db_path or ""):
+    # holds it (the runners' root for these targets). A service-owned target
+    # (e.g. villakunterbunt-staging, empty db_path) leaves its paths to the
+    # runner, whose guard key allows only scratch dirs of its policy roots.
+    # A path-driven target without a db_path never gets here (blocked reason).
+    runner_owns_paths = run.target.target_mode == BackupTargetMode.SERVICE_OWNED and not run.target.db_path
+    if not runner_owns_paths and root != posixpath.dirname(run.target.db_path or ""):
         return f"runner reported a scratch path outside the target's root ({scratch_path})"
     verification = raw.get("verification")
     if not isinstance(verification, dict) or verification.get("ok") is not True:

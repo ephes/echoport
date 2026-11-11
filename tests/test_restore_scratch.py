@@ -173,6 +173,50 @@ class TestScratchRestore:
             "ECHOPORT_RESTORE_OWNER": "marina:marina",
         }
 
+    def test_service_owned_target_with_empty_db_path(self, target, fake_fastdeploy):
+        # As villakunterbunt-staging's registration writes it.
+        BackupTarget.objects.filter(pk=target.pk).update(
+            target_mode="service_owned", db_path="", backup_files=[], restore_owner="", service_name=""
+        )
+        target.refresh_from_db()
+        backup = make_backup(target)
+        answer_scratch(fake_fastdeploy, scratch_path="/home/villakunterbunt/data/.restore-scratch-20261111T120000Z-<id>")
+        run = start_restore(backup, destination=RestoreDestination.SCRATCH)
+        run.refresh_from_db()
+        assert run.status == RestoreRunStatus.SUCCESS, run.error_message
+        context = fake_fastdeploy.started[0][1]
+        assert context["ECHOPORT_RESTORE_SCRATCH_DB_PATH"] == ""
+        assert context["ECHOPORT_DB_PATH"] == SCRATCH_POISON_DB_PATH
+        assert "ECHOPORT_RESTORE_OWNER" not in context
+
+    def test_service_owned_target_with_db_path_keeps_the_root_check(self, target, fake_fastdeploy):
+        BackupTarget.objects.filter(pk=target.pk).update(target_mode="service_owned")
+        target.refresh_from_db()
+        backup = make_backup(target)
+        answer_scratch(fake_fastdeploy, scratch_path="/srv/other/.restore-scratch-20261111T120000Z-<id>")
+        run = start_restore(backup, destination=RestoreDestination.SCRATCH)
+        run.refresh_from_db()
+        assert run.status == RestoreRunStatus.FAILED
+        assert "outside the target's root" in run.error_message
+
+    def test_path_driven_target_without_db_path_fails_closed(self, target, fake_fastdeploy):
+        BackupTarget.objects.filter(pk=target.pk).update(db_path="")
+        target.refresh_from_db()
+        assert "has no db_path" in scratch_restore_blocked_reason(target)
+        backup = make_backup(target)
+        with pytest.raises(RestoreError, match="has no db_path"):
+            start_restore(backup, destination=RestoreDestination.SCRATCH)
+        assert fake_fastdeploy.started == []
+        # And a result for such a target would not pass the root check either.
+        from backups.restore_engine import _scratch_result_problem
+
+        run = RestoreRun(pk=5, target=target, backup_run=backup, destination="scratch")
+        problem = _scratch_result_problem(run, {
+            "destination": "scratch", "scratch_path": "/srv/x/.restore-scratch-20261111T120000Z-5",
+            "verification": {"ok": True}, "cleaned": True,
+        })
+        assert "outside the target's root" in problem
+
     def test_keep_scratch(self, target, fake_fastdeploy):
         backup = make_backup(target)
         answer_scratch(fake_fastdeploy, kept=True, cleaned=False)

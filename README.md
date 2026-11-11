@@ -180,7 +180,9 @@ runner's `verification` (plus whether the copy was `kept` or `cleaned`, also
 for a failed run); it is `success` only when the runner confirms a scratch
 restore with a passed verification at `<dir>/.restore-scratch-<stamp>-<this
 restore's id>`, where `<dir>` is the directory of the target's `db_path`
-(the runner's root for the supported targets), and, without
+(the runner's root for the supported targets; a service-owned target with an
+empty `db_path` leaves the paths to its runner and the runner's guard key),
+and, without
 `--keep-scratch`, its removal.
 
 A scratch restore needs, checked by the command, `reserve_restore` and
@@ -198,7 +200,12 @@ The request uses its own action, `ECHOPORT_ACTION=restore-scratch` (runners
 restore only on the exact action `restore`), passes the live database path
 as `ECHOPORT_RESTORE_SCRATCH_DB_PATH`, and sends `ECHOPORT_DB_PATH` and
 `ECHOPORT_SERVICE_NAME` poisoned, so a runner that treats the unknown action
-as a backup fails at its database path check before any service stop. The
+as a backup fails at its database path check before any service stop (defence
+in depth for path-driven runners only: a service-owned runner decides its own
+paths and services and may ignore those fields, so for service-owned targets
+the capability gate is what keeps a scratch request away from an old runner).
+A path-driven target needs a `db_path`; for a service-owned target (empty
+`db_path`) the runner uses its own database path. The
 runners that support it (ops-library `echoport_backup`,
 `_restore_scratch.py.j2`) restore through the guard's `--restore-scratch` key,
 which allows only paths inside the scratch dir. The web UI starts live
