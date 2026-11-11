@@ -64,6 +64,15 @@
             <dt>Files Restored</dt>
             <dd>{{ restore.files_restored|intcomma }}</dd>
             {% endif %}
+
+            <dt>Destination</dt>
+            <dd>{{ restore.get_destination_display }}</dd>
+            {% if restore.destination == 'scratch' %}
+            <dt>Scratch Directory</dt>
+            <dd><code>{{ restore.scratch_path }}</code> ({% if restore.keep_scratch %}kept{% else %}removed again{% endif %})</dd>
+            <dt>Verification</dt>
+            <dd>database <code>{{ restore.verification.db_sha256 }}</code>, integrity {{ restore.verification.integrity }}, {{ restore.verification.tables }} tables, {{ restore.verification.entries }} entries</dd>
+            {% endif %}
         </dl>
     </div>
     {% endif %}

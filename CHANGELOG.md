@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Restores into a scratch destination: `manage.py restore <target> <run_id>
+  --destination scratch [--keep-scratch]` sends `ECHOPORT_ACTION=restore-scratch`
+  (the live database path as `ECHOPORT_RESTORE_SCRATCH_DB_PATH`,
+  `ECHOPORT_DB_PATH`/`ECHOPORT_SERVICE_NAME` poisoned for runners without the
+  action) and marks the run `success` only when the runner confirms a verified
+  scratch copy under the target's root (and its removal, unless kept). It
+  needs the new target flag `scratch_restore_enabled` and a newest successful
+  backup whose runner reported the `restore-scratch` capability. Migration
+  `0013_scratch_restore`: `BackupTarget.scratch_restore_enabled`,
+  `BackupRun.runner_capabilities` (from `ECHOPORT_RESULT` `capabilities`),
+  `RestoreRun.destination`, `keep_scratch`, `scratch_path`, `verification`,
+  all with defaults that keep existing behaviour. Live restores and the web UI
+  are unchanged. See the README, "Scratch restores".
 - New system check: `MINIO_ALIAS` must be a non-empty entry of
   `MINIO_ALIASES` (errors `backups.E001` empty, `backups.E002` not in the
   list), so `manage.py check`, `migrate` and Echoport's management commands

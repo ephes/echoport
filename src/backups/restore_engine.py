@@ -8,6 +8,8 @@ errors when mixing async code with ORM operations.
 """
 
 import logging
+import posixpath
+import re
 import time
 
 from django.conf import settings
@@ -27,6 +29,7 @@ from .models import (
     BackupRunStatus,
     BackupStatus,
     BackupTarget,
+    RestoreDestination,
     RestoreRun,
     RestoreRunStatus,
     RestoreTrigger,
@@ -35,6 +38,19 @@ from .models import (
 from .run_reaper import reap_stale, save_if_still_active
 
 ACTIVE_RESTORE_STATUSES = [RestoreRunStatus.PENDING, RestoreRunStatus.RUNNING]
+
+# Restore into a scratch destination (ops-library echoport_backup,
+# _restore_scratch.py.j2). A runner that does not know the action never
+# restores for it: every runner restores only on the exact action "restore".
+SCRATCH_ACTION = "restore-scratch"
+SCRATCH_CAPABILITY = "restore-scratch"
+# Sent instead of the live database path and service with a scratch request:
+# a runner without the action runs its backup path for it, which then fails at
+# its database path check before any service stop. The scratch runner reads
+# the live path from ECHOPORT_RESTORE_SCRATCH_DB_PATH and needs no service.
+SCRATCH_POISON_DB_PATH = "/nonexistent/echoport-restore-scratch-needs-a-scratch-runner/db.sqlite3"
+SCRATCH_POISON_SERVICE = "echoport-restore-scratch-needs-a-scratch-runner!"
+_SCRATCH_PATH_RE = re.compile(r"^(/[A-Za-z0-9._/-]+)/\.restore-scratch-[0-9]{8}T[0-9]{6}Z-([0-9]{1,12})$")
 
 
 # Import lazily to avoid circular imports
@@ -95,8 +111,39 @@ def restore_blocked_reason(target: BackupTarget) -> str | None:
     return None
 
 
+def scratch_restore_blocked_reason(target: BackupTarget) -> str | None:
+    """
+    Why no scratch restore may be started for ``target``, or None if one may.
+
+    Two gates besides ``restore_blocked_reason``: the operator enabled it on
+    the target, and the runner that made the target's newest successful
+    backup reported the restore-scratch capability (so a runner rolled back to
+    a revision without the action loses it with its next backup).
+    """
+    if not target.scratch_restore_enabled:
+        return f"Scratch restores are not enabled for target '{target.name}'"
+    newest = (
+        BackupRun.objects.filter(target=target, status=BackupRunStatus.SUCCESS)
+        .order_by("-started_at", "-pk")
+        .only("pk", "runner_capabilities")
+        .first()
+    )
+    if newest is None:
+        return f"Target '{target.name}' has no successful backup that proves a scratch-capable runner"
+    if SCRATCH_CAPABILITY not in (newest.runner_capabilities or []):
+        return (
+            f"The newest successful backup of '{target.name}' (run {newest.pk}) came from a runner "
+            f"without the {SCRATCH_CAPABILITY} capability; run a backup with the current runner first"
+        )
+    return None
+
+
 def reserve_restore(
-    backup_id: int, triggered_by: str = "", existing_run: RestoreRun | None = None
+    backup_id: int,
+    triggered_by: str = "",
+    existing_run: RestoreRun | None = None,
+    destination: str = RestoreDestination.LIVE,
+    keep_scratch: bool = False,
 ) -> RestoreRun:
     """Validate fresh state and reserve PENDING under the cleanup writer guard."""
     from .reservations import lock_target
@@ -113,6 +160,14 @@ def reserve_restore(
             reason = restore_blocked_reason(target)
             if reason:
                 raise RestoreError(reason)
+            if destination not in RestoreDestination.values:
+                raise RestoreError(f"Unknown restore destination '{destination}'")
+            if keep_scratch and destination != RestoreDestination.SCRATCH:
+                raise RestoreError("keep_scratch is only for scratch restores")
+            if destination == RestoreDestination.SCRATCH:
+                reason = scratch_restore_blocked_reason(target)
+                if reason:
+                    raise RestoreError(reason)
             if backup.deletion_pending_at:
                 raise RestoreError(f"Backup {backup_id} is pending deletion and cannot be restored")
             if backup.status != BackupRunStatus.SUCCESS:
@@ -132,6 +187,8 @@ def reserve_restore(
                     raise RestoreError(f"existing_run {current.id} target mismatch")
                 if current.status != RestoreRunStatus.PENDING:
                     raise RestoreError(f"existing_run {current.id} has status '{current.status}', expected 'pending'; no longer pending")
+                if (current.destination, current.keep_scratch) != (destination, keep_scratch):
+                    raise RestoreError(f"existing_run {current.id} is a {current.destination} restore, not {destination}")
                 current.backup_run = backup
                 return current
             if get_active_restore(target):
@@ -139,6 +196,7 @@ def reserve_restore(
             return RestoreRun.objects.create(
                 backup_run=backup, target=target, status=RestoreRunStatus.PENDING,
                 trigger=RestoreTrigger.MANUAL, triggered_by=triggered_by,
+                destination=destination, keep_scratch=keep_scratch,
             )
     except (BackupRun.DoesNotExist, RestoreRun.DoesNotExist) as error:
         raise RestoreError("Backup or restore reservation no longer exists") from error
@@ -152,6 +210,8 @@ def start_restore(
     backup_run: BackupRun,
     triggered_by: str = "",
     existing_run: RestoreRun | None = None,
+    destination: str = RestoreDestination.LIVE,
+    keep_scratch: bool = False,
 ) -> RestoreRun:
     """
     Start a restore from the given backup run (synchronous).
@@ -167,6 +227,10 @@ def start_restore(
         backup_run: BackupRun to restore from
         triggered_by: User or system that triggered the restore
         existing_run: Optional pre-created RestoreRun to continue (for UI race avoidance)
+        destination: "live" (in place, the default) or "scratch" (into a
+            scratch directory under the target's root, verified and removed
+            again; needs scratch_restore_blocked_reason() to be None)
+        keep_scratch: scratch only: keep the verified copy for inspection
 
     Returns:
         RestoreRun with final status
@@ -189,7 +253,7 @@ def start_restore(
     # The mark is written here, after the atomic block below has rolled back:
     # written inside it, it would be rolled back together with the error.
     try:
-        run = reserve_restore(backup_run.pk, triggered_by, existing_run)
+        run = reserve_restore(backup_run.pk, triggered_by, existing_run, destination, keep_scratch)
         backup_run = run.backup_run
         target = backup_run.target
     except RestoreError as error:
@@ -321,7 +385,45 @@ def _build_restore_context(backup_run: BackupRun, run: RestoreRun) -> dict:
     if target.restore_owner:
         context["ECHOPORT_RESTORE_OWNER"] = target.restore_owner
 
+    if run.destination == RestoreDestination.SCRATCH:
+        context.update(
+            {
+                "ECHOPORT_ACTION": SCRATCH_ACTION,
+                "ECHOPORT_RESTORE_DESTINATION": RestoreDestination.SCRATCH,
+                "ECHOPORT_RESTORE_KEEP_SCRATCH": "1" if run.keep_scratch else "0",
+                "ECHOPORT_RESTORE_SCRATCH_DB_PATH": target.db_path,
+                "ECHOPORT_DB_PATH": SCRATCH_POISON_DB_PATH,
+                "ECHOPORT_SERVICE_NAME": SCRATCH_POISON_SERVICE,
+                "ECHOPORT_BACKUP_FILES": "",
+            }
+        )
+
     return context
+
+
+def _scratch_result_problem(run: RestoreRun, raw: dict) -> str | None:
+    """Why a scratch run's result does not prove a verified scratch restore."""
+    if raw.get("destination") != RestoreDestination.SCRATCH:
+        return "runner did not confirm a scratch restore (no destination 'scratch' in its result)"
+    scratch_path = raw.get("scratch_path")
+    if not isinstance(scratch_path, str):
+        return f"runner reported no valid scratch path ({scratch_path!r})"
+    match = _SCRATCH_PATH_RE.match(scratch_path)
+    if match is None or any(part in ("", ".", "..") for part in scratch_path.split("/")[1:]):
+        return f"runner reported no valid scratch path ({scratch_path!r})"
+    root, restore_id = match.groups()
+    if restore_id != str(run.pk):
+        return f"runner reported the scratch path of another restore ({scratch_path})"
+    # The scratch dir sits next to the live database, in the directory that
+    # holds it (the runners' root for these targets); anything else fails closed.
+    if root != posixpath.dirname(run.target.db_path or ""):
+        return f"runner reported a scratch path outside the target's root ({scratch_path})"
+    verification = raw.get("verification")
+    if not isinstance(verification, dict) or verification.get("ok") is not True:
+        return "runner did not report a passed verification of the scratch copy"
+    if not run.keep_scratch and raw.get("cleaned") is not True:
+        return f"runner did not confirm that {scratch_path} was removed"
+    return None
 
 
 def _handle_deployment_finished(
@@ -339,7 +441,26 @@ def _handle_deployment_finished(
         # Parse the restore result from step messages
         result = client.parse_echoport_result(status.steps)
 
-        if result and result.success:
+        scratch = run.destination == RestoreDestination.SCRATCH
+        if scratch and result:
+            scratch_path = result.raw.get("scratch_path")
+            if isinstance(scratch_path, str):
+                run.scratch_path = scratch_path[:512]
+            if isinstance(result.raw.get("verification"), dict):
+                run.verification = dict(result.raw["verification"])
+            # Whether the copy (possibly sensitive) is still on the host.
+            run.verification = {
+                **(run.verification or {}),
+                "kept": result.raw.get("kept") is True,
+                "cleaned": result.raw.get("cleaned") is True,
+            }
+        problem = _scratch_result_problem(run, result.raw) if scratch and result and result.success else None
+
+        if result and result.success and problem:
+            run.status = RestoreRunStatus.FAILED
+            run.error_message = f"Scratch restore not confirmed: {problem}"
+            logger.error(f"Restore {run.id}: {run.error_message}")
+        elif result and result.success:
             run.status = RestoreRunStatus.SUCCESS
             run.files_restored = result.file_count
             logger.info(
@@ -384,7 +505,9 @@ def _handle_deployment_finished(
 
 
 # Fields written when a restore run reaches a final state.
-_FINAL_FIELDS = ["status", "logs", "files_restored", "error_message", "finished_at"]
+_FINAL_FIELDS = [
+    "status", "logs", "files_restored", "error_message", "finished_at", "scratch_path", "verification",
+]
 
 
 def _collect_step_logs(steps: list[dict]) -> str:

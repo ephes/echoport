@@ -118,6 +118,16 @@ class BackupTarget(models.Model):
         help_text="User:group to chown restored files (e.g., 'marina:marina'). "
                   "If blank, ownership is not changed after restore.",
     )
+    scratch_restore_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Allow restores into a scratch destination under the target's root "
+            "(manage.py restore --destination scratch). Only for targets whose "
+            "runner supports it; a scratch restore also needs the newest "
+            "successful backup to report the runner capability. Clear it "
+            "before rolling a runner back."
+        ),
+    )
     target_mode = models.CharField(
         max_length=20,
         choices=BackupTargetMode.choices,
@@ -446,6 +456,14 @@ class BackupRun(models.Model):
         blank=True,
         help_text="Number of files included in the backup",
     )
+    # What the runner that made this backup reported it can do
+    # (ECHOPORT_RESULT "capabilities", e.g. ["restore-scratch"]).
+    runner_capabilities = models.JSONField(
+        default=list,
+        blank=True,
+        editable=False,
+        help_text="Capabilities the runner reported with this backup",
+    )
 
     # Error handling
     error_message = models.TextField(
@@ -506,6 +524,11 @@ class RestoreTrigger(models.TextChoices):
     API = "api", "API"
 
 
+class RestoreDestination(models.TextChoices):
+    LIVE = "live", "Live (in place)"
+    SCRATCH = "scratch", "Scratch (under the target root, removed again)"
+
+
 class RestoreRun(models.Model):
     """
     Individual restore execution record.
@@ -543,6 +566,28 @@ class RestoreRun(models.Model):
         null=True,
         blank=True,
         help_text="FastDeploy deployment ID for this restore",
+    )
+
+    destination = models.CharField(
+        max_length=20,
+        choices=RestoreDestination.choices,
+        default=RestoreDestination.LIVE,
+        help_text="Where the restore wrote: the live paths or a scratch directory",
+    )
+    keep_scratch = models.BooleanField(
+        default=False,
+        help_text="Scratch restores only: keep the verified copy for inspection",
+    )
+    scratch_path = models.CharField(
+        max_length=512,
+        blank=True,
+        default="",
+        help_text="Scratch restores: the directory the runner restored into",
+    )
+    verification = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Scratch restores: the runner's verification of the restored copy",
     )
 
     # Restore result data

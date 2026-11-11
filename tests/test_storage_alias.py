@@ -138,14 +138,18 @@ class TestMigration:
         old.get_model("backups", "BackupTarget").objects.create(
             name="legacy", fastdeploy_service="echoport-backup", db_path="/tmp/legacy.db"
         )
+        state = ("backups", "0012_backuptarget_storage_alias")
         try:
             executor = MigrationExecutor(connection)
-            executor.migrate([("backups", "0012_backuptarget_storage_alias")])
-            assert BackupTarget.objects.get(name="legacy").storage_alias == "minio"
+            executor.migrate([state])
+            # The model as of 0012: later migrations add columns the current model reads.
+            Target = MigrationExecutor(connection).loader.project_state(state).apps.get_model("backups", "BackupTarget")
+            assert Target.objects.get(name="legacy").storage_alias == "minio"
         finally:
-            BackupTarget.objects.all().delete()
+            # Back to the leaf first: the current model reads the newer columns.
             leaf = MigrationExecutor(connection).loader.graph.leaf_nodes("backups")
             MigrationExecutor(connection).migrate(leaf)
+            BackupTarget.objects.all().delete()
 
 
 # ---------------------------------------------------------------------------

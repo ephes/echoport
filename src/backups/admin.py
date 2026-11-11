@@ -162,7 +162,8 @@ class BackupTargetAdmin(admin.ModelAdmin):
         }),
         ("FastDeploy Configuration", {
             "fields": ["fastdeploy_service", "fastdeploy_endpoint_key",
-                       "service_token", "service_name", "restore_owner"],
+                       "service_token", "service_name", "restore_owner",
+                       "scratch_restore_enabled"],
             "description": "FastDeploy endpoint key must match a key in FASTDEPLOY_ENDPOINTS setting (leave blank for default).",
         }),
         ("Backup Source", {
@@ -235,7 +236,7 @@ class BackupRunAdmin(admin.ModelAdmin):
     readonly_fields = [
         "target", "status", "trigger", "triggered_by",
         "fastdeploy_deployment_id", "storage_bucket", "storage_key",
-        "size_bytes", "checksum_sha256", "file_count", "deletion_pending_at",
+        "size_bytes", "checksum_sha256", "file_count", "runner_capabilities", "deletion_pending_at",
         "error_message", "logs", "started_at", "finished_at",
     ]
 
@@ -258,7 +259,8 @@ class RestoreRunAdmin(admin.ModelAdmin):
     search_fields = ["target__name"]
     date_hierarchy = "started_at"
     readonly_fields = [
-        "backup_run", "target", "status", "trigger", "triggered_by",
+        "backup_run", "target", "status", "trigger", "triggered_by", "destination",
+        "keep_scratch", "scratch_path", "verification",
         "fastdeploy_deployment_id", "files_restored",
         "error_message", "logs", "started_at", "finished_at",
     ]

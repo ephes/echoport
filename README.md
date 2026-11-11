@@ -138,6 +138,7 @@ chmod 600 .env  # Restrict .env permissions
 | Command | Description |
 |---------|-------------|
 | `backup <target>` | Run manual backup for a target |
+| `restore <target> <run_id> [--destination live\|scratch] [--keep-scratch]` | Run a restore synchronously; `scratch` restores next to the live data instead (see [Scratch restores](#scratch-restores)) |
 | `run_scheduled_backups` | Reap stale runs, record late archives of timed-out backups, then check and run due scheduled backups (cron); `--reap-only` only reaps |
 | `cleanup_old_backups` | Delete backups older than retention_days (see Retention cleanup) |
 | `set_storage_alias <target> <alias\|paused>` | Set the object store retention deletes a target's archives from, or pause its retention (see [One store per target](#one-store-per-target)) |
@@ -165,6 +166,43 @@ FastDeploy service `echoport-self-backup`, or by the systemd unit
 
 Or use Justfile shortcuts: `just backup <target>`, `just devdata`,
 `just set-storage-alias <target> <alias|paused>`
+
+### Scratch restores
+
+`manage.py restore <target> <run_id> --destination scratch` tests the whole
+restore route without touching live data: the runner restores the archive into
+`<root>/.restore-scratch-<UTC stamp>-<restore id>` under the target's root,
+with no service stop and no write to a live path, downloads that copy back,
+compares it with the archive (every file's SHA-256, the database's
+`PRAGMA integrity_check`) and removes it again (`--keep-scratch` keeps it for
+inspection). The restore run records `destination`, `scratch_path` and the
+runner's `verification` (plus whether the copy was `kept` or `cleaned`, also
+for a failed run); it is `success` only when the runner confirms a scratch
+restore with a passed verification at `<dir>/.restore-scratch-<stamp>-<this
+restore's id>`, where `<dir>` is the directory of the target's `db_path`
+(the runner's root for the supported targets), and, without
+`--keep-scratch`, its removal.
+
+A scratch restore needs, checked by the command, `reserve_restore` and
+`start_restore`:
+
+- `scratch_restore_enabled` on the target (admin, "FastDeploy Configuration";
+  default off; clear it before rolling a runner back or pointing the target at
+  another FastDeploy service), and
+- a newest successful backup of the target whose runner reported the
+  `restore-scratch` capability (`BackupRun.runner_capabilities`, from the
+  `capabilities` list in `ECHOPORT_RESULT`), so a runner without the action
+  never gets the request.
+
+The request uses its own action, `ECHOPORT_ACTION=restore-scratch` (runners
+restore only on the exact action `restore`), passes the live database path
+as `ECHOPORT_RESTORE_SCRATCH_DB_PATH`, and sends `ECHOPORT_DB_PATH` and
+`ECHOPORT_SERVICE_NAME` poisoned, so a runner that treats the unknown action
+as a backup fails at its database path check before any service stop. The
+runners that support it (ops-library `echoport_backup`,
+`_restore_scratch.py.j2`) restore through the guard's `--restore-scratch` key,
+which allows only paths inside the scratch dir. The web UI starts live
+restores only.
 
 ### Stale runs
 

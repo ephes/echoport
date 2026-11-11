@@ -7,7 +7,7 @@ Provides synchronous HTTP client for triggering deployments and polling status.
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -179,6 +179,13 @@ class DeploymentStatus:
         return None
 
 
+def _string_list(value: Any) -> list[str]:
+    """A list of short strings from a result field, anything else as []."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and 0 < len(item) <= 64]
+
+
 @dataclass
 class BackupResult:
     """
@@ -195,6 +202,10 @@ class BackupResult:
     checksum_sha256: str
     file_count: int = 0
     error: str | None = None
+    # What the runner says it supports (e.g. ["restore-scratch"]); only strings.
+    capabilities: list[str] = field(default_factory=list)
+    # The whole parsed payload, for result fields of other actions (scratch restores).
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 class FastDeployClient:
@@ -351,6 +362,8 @@ class FastDeployClient:
                         checksum_sha256=data.get("checksum_sha256", ""),
                         file_count=data.get("file_count", 0),
                         error=data.get("error"),
+                        capabilities=_string_list(data.get("capabilities")),
+                        raw=data if isinstance(data, dict) else {},
                     )
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse ECHOPORT_RESULT JSON: {e}")

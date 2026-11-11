@@ -99,6 +99,8 @@ class TestRestoreCommand:
         mock_start.assert_called_once_with(
             successful_backup,
             triggered_by="cli",
+            destination="live",
+            keep_scratch=False,
         )
         captured = capsys.readouterr()
         assert "successfully" in captured.out
@@ -145,6 +147,8 @@ class TestRestoreCommand:
         mock_start.assert_called_once_with(
             successful_backup,
             triggered_by="operator-joe",
+            destination="live",
+            keep_scratch=False,
         )
 
     def test_backup_run_wrong_target(self, restore_target, db):

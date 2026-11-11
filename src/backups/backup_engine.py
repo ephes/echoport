@@ -306,6 +306,7 @@ def _handle_deployment_finished(
             run.size_bytes = result.size_bytes
             run.checksum_sha256 = result.checksum_sha256
             run.file_count = result.file_count
+            run.runner_capabilities = result.capabilities
             logger.info(
                 f"Backup {run.id} completed successfully: {result.key} "
                 f"({result.size_bytes} bytes, {result.file_count} files)"
@@ -343,6 +344,7 @@ _FINAL_FIELDS = [
     "size_bytes",
     "checksum_sha256",
     "file_count",
+    "runner_capabilities",
     "error_message",
     "finished_at",
 ]
@@ -492,6 +494,7 @@ def _reconcile_timed_out_run(run: BackupRun) -> bool:
             size_bytes=result.size_bytes,
             checksum_sha256=result.checksum_sha256,
             file_count=result.file_count,
+            runner_capabilities=result.capabilities,
             error_message=(
                 f"{run.error_message} Deployment {deployment_id} finished later and uploaded "
                 f"{result.key}; the archive is recorded on this run."
