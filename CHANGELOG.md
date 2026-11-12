@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `cleanup_old_backups` logs and skips a successful run without a storage
+  bucket or key (row kept, counted as skipped) instead of counting it as a
+  failure, so such rows no longer make every nightly cleanup exit 1. Dry-run
+  reports them as `Would skip`.
+- `minio_client.object_exists` (`mc stat`) takes the target's store alias as a
+  required `alias` argument and refuses one outside `MINIO_ALIASES`, like the
+  delete and list helpers; it no longer falls back to `MINIO_ALIAS`.
 - Restores into a scratch destination: `manage.py restore <target> <run_id>
   --destination scratch [--keep-scratch]` sends `ECHOPORT_ACTION=restore-scratch`
   (the live database path as `ECHOPORT_RESTORE_SCRATCH_DB_PATH`,

@@ -147,10 +147,10 @@ def client(store: Store, settings, tmp_path: Path) -> Store:
 
 def test_delete_object_removes_the_object(client: Store) -> None:
     client.put("nyxmon/2026-11-01T02-00-00.tar.gz")
-    assert minio_client.object_exists(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz")
+    assert minio_client.object_exists(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz", alias="retention")
     assert minio_client.delete_object(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz", alias="retention")
     assert not client.exists("nyxmon/2026-11-01T02-00-00.tar.gz")
-    assert not minio_client.object_exists(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz")
+    assert not minio_client.object_exists(BUCKET, "nyxmon/2026-11-01T02-00-00.tar.gz", alias="retention")
 
 
 def test_delete_object_of_a_missing_object_is_idempotent(client: Store) -> None:

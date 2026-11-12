@@ -341,13 +341,13 @@ class TestCleanupCommand:
     def test_skips_backup_without_storage_info(
         self, mock_delete, target_with_retention, capsys
     ):
-        """Should skip backups with missing storage info to avoid orphans."""
-        # This shouldn't happen for SUCCESS backups, but treat as error
+        """A run without storage info is logged and skipped; the run still exits 0."""
+        # Old homepage-media runs (Feb 2026) have a bucket but no key.
         backup = BackupRun.objects.create(
             target=target_with_retention,
             status=BackupRunStatus.SUCCESS,
-            storage_bucket="",  # No storage info
-            storage_key="",
+            storage_bucket="backups",
+            storage_key="",  # No key
         )
         backup.finished_at = timezone.now() - timedelta(days=10)
         backup.save()
@@ -355,17 +355,56 @@ class TestCleanupCommand:
         command = Command()
         with pytest.raises(SystemExit) as exc_info:
             command.handle(dry_run=False, target=None)
-        assert exc_info.value.code == 1  # Error exit code
+        assert exc_info.value.code == 0
 
         # Should not attempt MinIO deletion and should preserve DB record
         mock_delete.assert_not_called()
-        assert BackupRun.objects.filter(pk=backup.pk).exists()
+        backup.refresh_from_db()
+        assert backup.deletion_pending_at is None
 
         captured = capsys.readouterr()
-        assert "missing storage info" in captured.err
+        assert f"Skipping backup {backup.pk}: missing storage info" in captured.out
+        assert "1 skipped" in captured.out
+        assert "failed" not in captured.err
+
+    @pytest.mark.parametrize("bucket,key", [("", ""), ("", "test/a.tar.gz"), ("backups", "")])
+    @patch("backups.management.commands.cleanup_old_backups.delete_prefix")
+    @patch("backups.management.commands.cleanup_old_backups.list_prefix", return_value=[])
+    @patch("backups.management.commands.cleanup_old_backups.delete_object", return_value=True)
+    def test_missing_storage_info_does_not_block_other_deletions(
+        self, mock_delete, mock_list, mock_delete_prefix, bucket, key, target_with_retention, capsys
+    ):
+        """Expired runs with storage are deleted next to a skipped run without it."""
+        broken = BackupRun.objects.create(
+            target=target_with_retention,
+            status=BackupRunStatus.SUCCESS,
+            storage_bucket=bucket,
+            storage_key=key,
+        )
+        valid = BackupRun.objects.create(
+            target=target_with_retention,
+            status=BackupRunStatus.SUCCESS,
+            storage_bucket="backups",
+            storage_key="test/valid.tar.gz",
+        )
+        BackupRun.objects.filter(pk__in=[broken.pk, valid.pk]).update(
+            finished_at=timezone.now() - timedelta(days=10)
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            Command().handle(dry_run=False, target=None)
+        assert exc_info.value.code == 0
+
+        assert BackupRun.objects.filter(pk=broken.pk).exists()
+        assert not BackupRun.objects.filter(pk=valid.pk).exists()
+        mock_delete.assert_called_once_with(
+            "backups", "test/valid.tar.gz", alias=target_with_retention.storage_alias
+        )
+        captured = capsys.readouterr()
+        assert "Complete: 1 deleted, 1 skipped" in captured.out
 
     def test_dry_run_validates_storage_info(self, target_with_retention, capsys):
-        """Dry-run should report errors for backups with missing storage info."""
+        """Dry-run reports a run with missing storage info as skipped, not as an error."""
         backup = BackupRun.objects.create(
             target=target_with_retention,
             status=BackupRunStatus.SUCCESS,
@@ -381,16 +420,14 @@ class TestCleanupCommand:
         assert exc_info.value.code == 0  # Dry-run always exits 0
 
         captured = capsys.readouterr()
-        # Should report this would error, not "would delete"
-        assert "Would ERROR" in captured.err
-        assert "missing storage info" in captured.err
+        assert f"Would skip backup {backup.pk}: missing storage info" in captured.out
         assert "Would delete" not in captured.out
-        # Summary should mention errors
-        assert "would error" in captured.err
-        assert "with issues" in captured.err
+        assert "Dry run complete: 1 would be skipped" in captured.out
+        assert "would error" not in captured.err
+        assert "with issues" not in captured.err
 
-    def test_dry_run_summary_shows_both_counts(self, target_with_retention, capsys):
-        """Dry-run summary should show both 'would delete' and 'would error' counts."""
+    def test_dry_run_summary_shows_delete_and_skip_counts(self, target_with_retention, capsys):
+        """Dry-run summary counts a run without storage info as skipped, not as an error."""
         # Create one valid backup and one with missing storage info
         valid_backup = BackupRun.objects.create(
             target=target_with_retention,
@@ -416,9 +453,9 @@ class TestCleanupCommand:
         assert exc_info.value.code == 0
 
         captured = capsys.readouterr()
-        # Summary should include both counts
-        assert "1 would be deleted" in captured.err
-        assert "1 would error" in captured.err
+        # The summary has the delete and the skip count, no error count
+        assert "1 would be deleted, 1 would be skipped" in captured.out
+        assert "would error" not in captured.err
 
     @patch("backups.management.commands.cleanup_old_backups.delete_object")
     @patch("backups.management.commands.cleanup_old_backups.get_backups_to_delete")
@@ -617,9 +654,10 @@ class TestMinioClient:
 
         mock_run.return_value = MagicMock(returncode=0)
 
-        result = object_exists("backups", "test/backup.tar.gz")
+        result = object_exists("backups", "test/backup.tar.gz", alias="rustfs")
 
         assert result is True
+        assert mock_run.call_args.args[0][-1] == "rustfs/backups/test/backup.tar.gz"
 
     @patch("backups.minio_client.subprocess.run")
     def test_object_exists_false(self, mock_run):
@@ -628,9 +666,25 @@ class TestMinioClient:
 
         mock_run.return_value = MagicMock(returncode=1)
 
-        result = object_exists("backups", "test/backup.tar.gz")
+        result = object_exists("backups", "test/backup.tar.gz", alias="minio")
 
         assert result is False
+
+    @patch("backups.minio_client.subprocess.run")
+    def test_object_exists_refuses_unknown_alias(self, mock_run, settings):
+        """object_exists checks only through one of MINIO_ALIASES, never a fallback."""
+        from backups.minio_client import object_exists
+
+        settings.MINIO_ALIAS = "minio"
+        assert object_exists("backups", "test/backup.tar.gz", alias="other") is False
+        mock_run.assert_not_called()
+
+    def test_object_exists_needs_alias(self):
+        """There is no default alias: a target's store must be named."""
+        from backups.minio_client import object_exists
+
+        with pytest.raises(TypeError):
+            object_exists("backups", "test/backup.tar.gz")
 
     @patch("backups.minio_client.subprocess.run")
     def test_handles_timeout(self, mock_run):

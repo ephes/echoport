@@ -20,11 +20,6 @@ def _get_mc_path() -> str:
     return getattr(settings, "MINIO_MC_PATH", "/usr/local/bin/mc")
 
 
-def _get_minio_alias() -> str:
-    """Get the MinIO alias configured in mc."""
-    return getattr(settings, "MINIO_ALIAS", "minio")
-
-
 def _allowed_alias(alias: str) -> bool:
     """
     True for one of MINIO_ALIASES (a target's store).
@@ -293,19 +288,23 @@ def delete_prefix(bucket: str, prefix: str, *, alias: str) -> bool:
     return True
 
 
-def object_exists(bucket: str, key: str) -> bool:
+def object_exists(bucket: str, key: str, *, alias: str) -> bool:
     """
-    Check if an object exists in MinIO.
+    Check if an object exists on the target's store (``mc stat``).
 
     Args:
         bucket: The bucket name (e.g., "backups")
         key: The object key (e.g., "nyxmon/2026-01-28T02-00-00.tar.gz")
+        alias: The mc alias of the target's store (``BackupTarget.storage_alias``,
+            one of MINIO_ALIASES); there is no default, so a check never falls
+            back to MINIO_ALIAS for a target on another store
 
     Returns:
-        True if the object exists, False otherwise
+        True if the object exists, False otherwise (also for a refused alias)
     """
+    if not _allowed_alias(alias):
+        return False
     mc_path = _get_mc_path()
-    alias = _get_minio_alias()
     object_path = f"{alias}/{bucket}/{key}"
 
     try:
