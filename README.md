@@ -226,6 +226,11 @@ already missing objects count as deleted. Never clear intent to retry a restore.
 Unexpected restore references or coordinate drift require manual reconciliation;
 PROTECT remains enforced. Existing missing artifacts are not detected or repaired.
 
+A successful run without a storage bucket or key (such as three homepage-media
+runs from February 2026) has nothing cleanup could delete. Cleanup logs
+`Skipping backup <id>: missing storage info (...)` on every run, counts it as
+skipped, keeps the row and does not fail the run for it (dry-run: `Would skip`).
+
 Schema migration **0011_backuprun_deletion_pending_at** adds the nullable marker.
 For rollout, hold cleanup while applying the migration and replacing all UI/CLI
 writers with guarded admission, then resume cleanup. During mixed old/new code,

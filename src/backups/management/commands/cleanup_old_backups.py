@@ -8,7 +8,9 @@ another backup run still references is kept; only the expired row goes.
 Prefix keys (media targets) are deleted recursively and must be empty
 before the row is removed. Each target's archives are deleted through its
 own mc alias (``BackupTarget.storage_alias``, the store that holds them);
-a target whose alias is empty (paused) is skipped.
+a target whose alias is empty (paused) is skipped. A successful run without
+a storage bucket or key has nothing to delete: it is logged and skipped (row
+kept), and it does not fail the run.
 
 Usage:
     python manage.py cleanup_old_backups
@@ -59,6 +61,16 @@ class DeleteResult(Enum):
 def _format_ids(ids: list[int], limit: int = 5) -> str:
     shown = ", ".join(str(i) for i in ids[:limit])
     return f"{shown} and {len(ids) - limit} more" if len(ids) > limit else shown
+
+
+def _missing_storage(backup: BackupRun) -> str:
+    """Why a run without a storage bucket or key is skipped (logged on every run)."""
+    message = (
+        f"missing storage info (bucket {backup.storage_bucket!r}, key {backup.storage_key!r}); "
+        "nothing to delete, row kept"
+    )
+    logger.warning(f"Backup {backup.pk} of target {backup.target_id}: {message}")
+    return message
 
 
 def _get_lock_file_path() -> Path:
@@ -371,12 +383,10 @@ class Command(BaseCommand):
             if dry_run:
                 # Validate storage info in dry-run to reflect actual outcome
                 if not backup.storage_key or not backup.storage_bucket:
-                    self.stderr.write(
-                        self.style.ERROR(
-                            f"  [DRY RUN] Would ERROR: backup {backup.id} has missing storage info"
-                        )
-                    )
-                    errors += 1
+                    self.stdout.write(self.style.WARNING(
+                        f"  [DRY RUN] Would skip backup {backup.pk}: {_missing_storage(backup)}"
+                    ))
+                    skipped += 1
                 elif below := runs_stored_below(
                     backup, backup.storage_bucket, backup.storage_key, dry_run_deleted_ids
                 ):
@@ -431,8 +441,10 @@ class Command(BaseCommand):
                     self.stdout.write(f"  Skipping backup {backup.pk} - RestoreRun exists")
                     return DeleteResult.SKIPPED
                 if not current.storage_bucket or not current.storage_key:
-                    self.stderr.write(f"  Backup {backup.pk} has missing storage info")
-                    return DeleteResult.ERROR
+                    self.stdout.write(self.style.WARNING(
+                        f"  Skipping backup {backup.pk}: {_missing_storage(current)}"
+                    ))
+                    return DeleteResult.SKIPPED
                 if current.status != BackupRunStatus.SUCCESS:
                     return DeleteResult.SKIPPED
                 # The store comes from the locked target row and joins the
